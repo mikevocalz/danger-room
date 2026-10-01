@@ -1,0 +1,25 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.dvntproject2.dangerroom'
+version = '0.2.0'
+
+expoModule {
+  canBePublished false
+  v2 true
+}
+
+android {
+  namespace "com.dvntproject2.dangerroom.reservedregions"
+  defaultConfig {
+    versionCode 2
+    versionName "0.2.0"
+  }
+}
+
+dependencies {
+  implementation 'com.facebook.react:react-android'
+  implementation "androidx.window:window:1.5.1"
+}

@@ -1,36 +1,38 @@
 diff --git a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java
-index aa37213..0ca9483 100644
 --- a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java
 +++ b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java
-@@ -344,17 +344,39 @@ final class CustomVideoFrameDelivery {
+@@ -358,17 +358,39 @@
          // timestamp when JS did not supply one.
          long stampNs = timestampNs != 0 ? timestampNs : System.nanoTime();
  
-+        // Composite the face-tracked overlay (if active) into a pooled RGBA
-+        // texture on this same GL thread. >= 0 means we ship the composited
-+        // Type.RGB texture instead of the camera OES one; -1 keeps the original
-+        // path untouched (disabled / no face / no overlay / pool exhausted).
-+        final int overlayTex =
-+                OverlayCompositor.getInstance().compositeIfActive(textureId, dimensions[0], dimensions[1], rotation);
-+
-         // Ownership of {AHB, EGLImage, OES texture} now transfers to the frame's
-         // release callback, fired when the encoder drops its last reference.
-         ownedAhb[0] = 0;
+-        // Ownership of {AHB, EGLImage, OES texture} now transfers to the frame's
+-        // release callback, fired when the encoder drops its last reference.
+-        ownedAhb[0] = 0;
 -        TextureBufferImpl buffer = new TextureBufferImpl(dimensions[0],
 -                dimensions[1],
 -                VideoFrame.TextureBuffer.Type.OES,
 -                textureId,
--                IDENTITY_MATRIX,
+-                TOP_DOWN_TEXTURE_MATRIX,
 -                glHandler,
 -                yuvConverter,
 -                () -> releaseForwardedFrame(eglImage, textureId, ahbHandle));
++        // DANGER-ROOM PATCH: composite the face-tracked overlay (if active)
++        // into a pooled RGBA texture on this same GL thread. >= 0 means we ship
++        // the composited RGB texture; -1 preserves Fishjam's OES path.
++        final int overlayTex =
++                OverlayCompositor.getInstance().compositeIfActive(
++                        textureId, dimensions[0], dimensions[1], rotation);
++
++        // Ownership of {AHB, EGLImage, OES texture} now transfers to the frame's
++        // release callback, fired when the encoder drops its last reference.
++        ownedAhb[0] = 0;
 +        TextureBufferImpl buffer;
 +        if (overlayTex >= 0) {
 +            buffer = new TextureBufferImpl(dimensions[0],
 +                    dimensions[1],
 +                    VideoFrame.TextureBuffer.Type.RGB,
 +                    overlayTex,
-+                    IDENTITY_MATRIX,
++                    TOP_DOWN_TEXTURE_MATRIX,
 +                    glHandler,
 +                    yuvConverter,
 +                    () -> {
@@ -42,7 +44,7 @@ index aa37213..0ca9483 100644
 +                    dimensions[1],
 +                    VideoFrame.TextureBuffer.Type.OES,
 +                    textureId,
-+                    IDENTITY_MATRIX,
++                    TOP_DOWN_TEXTURE_MATRIX,
 +                    glHandler,
 +                    yuvConverter,
 +                    () -> releaseForwardedFrame(eglImage, textureId, ahbHandle));
@@ -728,30 +730,47 @@ index 0000000..aff63a3
 +    }
 +}
 diff --git a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-index 1b68fa7..6212ad7 100644
 --- a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 +++ b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-@@ -81,6 +81,9 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -84,9 +84,12 @@
  
-         mPeerConnectionObservers = new SparseArray<>();
-         localStreams = new HashMap<>();
-+        // DANGER-ROOM PATCH: let ExternalVideoSurfaces resolve streams for
-+        // externally-supplied Surfaces (Viro ExternalSurfaceTexture consumers).
+     public WebRTCModule(ReactApplicationContext reactContext) {
+         super(reactContext);
+-        mPeerConnectionObservers = new SparseArray<>();
+-        localStreams = new HashMap<>();
+-        audioExtractionController = new AudioExtractionController(reactContext, this::getTrack);
++        mPeerConnectionObservers = new SparseArray<>();
++        localStreams = new HashMap<>();
++        // DANGER-ROOM PATCH: let Viro resolve a WebRTC stream by react tag and
++        // render it into an externally supplied Surface without a hard dependency.
 +        ExternalVideoSurfaces.sModule = this;
-         audioExtractionController = new AudioExtractionController(reactContext, this::getTrack);
++        audioExtractionController = new AudioExtractionController(reactContext, this::getTrack);
  
          WebRTCModuleOptions options = WebRTCModuleOptions.getInstance();
-@@ -1757,4 +1760,22 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
-     public void removeListeners(Integer count) {
-         // Keep: Required for RN built in Event Emitter Calls.
+ 
+@@ -1904,10 +1904,29 @@
+         return voipController.getPendingIncomingCall();
      }
+ 
+-    @ReactMethod
+-    public void clearPendingIncomingCall(Promise promise) {
+-        voipController.clearPendingIncomingCall();
+-        promise.resolve(null);
+-    }
+-}
++    @ReactMethod
++    public void clearPendingIncomingCall(Promise promise) {
++        voipController.clearPendingIncomingCall();
++        promise.resolve(null);
++    }
 +
-+    // --- Face-tracked overlay compositor (Android GL; see OverlayCompositor). ---
++    // --- DANGER-ROOM PATCH: face-tracked publish compositor. ---
 +
 +    @ReactMethod
 +    public void overlaySetImage(
 +            String base64Png, double imgW, double imgH, double tplIod, double anchorX, double anchorY) {
-+        OverlayCompositor.getInstance().setOverlayImage(base64Png, imgW, imgH, tplIod, anchorX, anchorY);
++        OverlayCompositor.getInstance().setOverlayImage(
++                base64Png, imgW, imgH, tplIod, anchorX, anchorY);
 +    }
 +
 +    @ReactMethod
@@ -763,4 +782,5 @@ index 1b68fa7..6212ad7 100644
 +    public void overlaySetEnabled(boolean enabled) {
 +        OverlayCompositor.getInstance().setEnabled(enabled);
 +    }
- }
++}
+ 

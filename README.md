@@ -4,27 +4,46 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 
 ## Fishjam + Viro notes
 
-**Fishjam (live rooms).** Fishjam 0.29.0 publishes the camera via `useVisionCameraSource` (Nitro VisionCamera 5.2.1). Two local patches live in `patches/` and are applied by the `postinstall` patch-package step:
+**Fishjam (live rooms).** The npm sweep now uses `@fishjam-cloud/react-native-client@0.30.2`, `@fishjam-cloud/react-native-vision-camera-source@0.30.2`, and `@fishjam-cloud/react-native-webrtc@0.31.0`. The two Danger Room native fixes were rebased to those releases and remain under `patches/`; npm `overrides` forces one WebRTC 0.31.0 copy so the client package cannot pull a second native 0.30.x module. VisionCamera remains 5.2.3.
 
 - `@fishjam-cloud/react-native-vision-camera-source` — front-camera 180° rotation fix.
 - `@fishjam-cloud/react-native-webrtc` — native GL cowl compositor that bakes the face-tracked cowl into the published track, so guests see it too (Android only; the local preview stays the Reanimated overlay).
 
 Heads-up: the Fishjam free tier can return **HTTP 402** (quota) — room joins fail until the quota resets or you upgrade at [fishjam.io/app](https://fishjam.io/app).
 
-**Viro / XR (Quest).** XR uses `@reactvision/react-viro@2.57.5` with `xRMode: ["QUEST"]` plus `expo-horizon-core@57` — the panel dimensions MUST be dp strings (`1024dp`/`640dp`). ENTER XR on the lobby routes to `/xr`, where `ViroXRSceneNavigator` launches the immersive VRActivity; the app always cold-starts in 2D. The passthrough toggle flips `visible` on a skybox sphere — never unmount Viro texture nodes (SIGSEGV). Viro's GVR audio is silent on Quest, so the spatial theme plays through `react-native-audio-api` (StereoPanner).
+**Viro / XR (Quest).** The Expo 58 migration pins the current private `mikevocalz/viro` fork at `b4cd6aaf62ecc5f004f53da6ef271654cd19d044` (`3.0.1-moyo.0`) plus the paired `nitro-canvas-in-Vision` Rive/AHardwareBuffer runtime. `xRMode: ["QUEST"]` remains enabled with `expo-horizon-core@57.0.2` — currently the latest published Horizon package — and panel dimensions MUST be dp strings (`1024dp`/`640dp`). ENTER XR routes to `/xr`, where `ViroXRSceneNavigator` launches the immersive VRActivity; the app always cold-starts in 2D. The passthrough toggle flips `visible` on the skybox sphere — never unmount Viro texture nodes (SIGSEGV). Viro's GVR audio is silent on Quest, so the spatial theme plays through `react-native-audio-api` (StereoPanner).
 
 Builds:
 
 ```bash
-# Quest
-npx expo prebuild --clean -p android
-cd android && ./gradlew :app:assembleQuestDebug -PreactNativeArchitectures=arm64-v8a
+npm install
+npm run doctor
+npm run typecheck
+npx expo prebuild --clean
 
-# Phones
-npx expo run:android
+# Standard Android / foldables
+npm run android
+
+# Meta Quest / Horizon
+npm run quest
 ```
 
-Native changes (`patches/`, config plugins) require a rebuild; JS-only changes just need Metro (port 8090).
+`npm run android` explicitly targets `mobileDebug`; `npm run quest` targets `questDebug`. This matters because `expo-horizon-core` creates both product flavors and a bare `expo run:android` can be ambiguous.
+
+**Rive spatial skin.** Danger Room keeps the existing Viro geometry as a fallback, then overlays the fork's GPU-backed `ViroRivePanel` surfaces when a compiled Rive file is configured. The native deferred Rive path currently targets Android 14/API 34+ (Quest) and uses AHardwareBuffer rather than a JS pixel-copy loop.
+
+```bash
+EXPO_PUBLIC_DANGER_ROOM_RIVE_URL=https://your-cdn.example/danger-room.riv
+EXPO_PUBLIC_DANGER_ROOM_RIVE_PLATE_ARTBOARD=ParticipantPlate
+EXPO_PUBLIC_DANGER_ROOM_RIVE_HUD_ARTBOARD=DangerRoomHUD
+EXPO_PUBLIC_DANGER_ROOM_RIVE_STATE_MACHINE=Main
+```
+
+The authored Rive View Model should expose `participant.name`, `participant.role`, `participant.active`, `hud.title`, `hud.mode`, `hud.themePlaying`, and `hud.guestCount`. See `docs/SDK58-SPLIT-VIRO-RIVE.md` for the full migration and foldable/Quest acceptance checklist.
+
+Native changes (`patches/`, local modules, config plugins, Viro/Nitro SHAs) require a rebuild; JS-only changes just need Metro (port 8090).
+
+**Dependency policy.** Registry packages are exact-pinned to the npm-current versions reviewed on October 1, 2026. Expo itself stays on SDK 58 / RN 0.88 instead of following npm's older stable Expo/RN tags backward. The private Viro and Nitro packages remain immutable Git SHAs.
 
 ## Get started
 

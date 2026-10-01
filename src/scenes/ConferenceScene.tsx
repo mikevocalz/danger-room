@@ -13,10 +13,14 @@ import {
   ViroAmbientLight,
   ViroDirectionalLight,
   ViroExternalVideo,
+  ViroRivePanel,
   useAnySourceHover,
 } from '@reactvision/react-viro';
 
+import type { RiveCanvasOptions } from 'nitro-canvas-in-Vision';
+
 import { updateListener, restartTheme, getThemeState, onThemeState } from './xrThemeAudio';
+import { useDangerRoomRiveSources } from './rive/useDangerRoomRiveSources';
 
 /**
  * Spatial conference scene — cloned from Viro's shipped `vr-quest-scene.tsx`
@@ -196,22 +200,46 @@ const Label = ({
 
 /** A roster-console plate: cream frame, cobalt screen, gold header, name centred. */
 const Plate = ({
-  w, h, name, headerH, fontSize,
+  w, h, name, headerH, fontSize, role = 'guest', riveSource,
 }: {
-  w: number; h: number; name: string; headerH: number; fontSize: number;
+  w: number;
+  h: number;
+  name: string;
+  headerH: number;
+  fontSize: number;
+  role?: 'host' | 'guest';
+  riveSource?: RiveCanvasOptions | null;
 }) => {
   const inset = 0.02;
   const screenH = h - headerH - inset;
   const headerY = h / 2 - headerH / 2 - inset;
-  const screenY = -(headerH + inset) / 2 - inset / 2; // centre of the cobalt screen
+  const screenY = -(headerH + inset) / 2 - inset / 2;
+  const resolutionWidth = 768;
+  const resolutionHeight = Math.max(256, Math.round((resolutionWidth * h) / w));
+
   return (
     <ViroNode>
       <ViroQuad width={w} height={h} materials={['frame']} />
       <ViroQuad width={w - inset * 2} height={headerH} position={[0, headerY, 0.006]} materials={['header']} />
       <ViroQuad width={w - inset * 2} height={screenH} position={[0, screenY, 0.004]} materials={['screen']} />
-      {/* Name in the gold header band (dark on gold), nudged DOWN so it sits
-          visually centred — Viro text baselines render a touch high. */}
       <Label text={name.toUpperCase()} pw={w - 0.1} ph={headerH} fontSize={fontSize} color="#16294d" y={headerY - headerH * 0.22} />
+      {riveSource ? (
+        <ViroRivePanel
+          source={riveSource}
+          width={w - inset * 2}
+          height={h - inset * 2}
+          position={[0, 0, 0.01]}
+          resolution={{ width: resolutionWidth, height: resolutionHeight }}
+          androidRoute="ahb"
+          fallbackColor="#16294d"
+          bindings={{
+            'participant.name': name.toUpperCase(),
+            'participant.role': role,
+            'participant.active': true,
+          }}
+          onError={(error) => console.warn('[xr/rive] participant panel failed', error.message)}
+        />
+      ) : null}
     </ViroNode>
   );
 };
@@ -258,7 +286,12 @@ export const ConferenceScene = (props: {
 }) => {
   const [passthrough, setPassthrough] = useState(false);
   const [theme, setTheme] = useState(getThemeState());
+  const { plateSource, hudSource, error: riveError } = useDangerRoomRiveSources();
+
   useEffect(() => onThemeState(setTheme), []);
+  useEffect(() => {
+    if (riveError) console.warn('[xr/rive] falling back to native geometry:', riveError);
+  }, [riveError]);
   // Host's RN-webrtc stream tag, delivered from xr.tsx via viroAppProps (a
   // string, so it crosses the navigator boundary regardless of React roots).
   const hostStreamTag = props.sceneNavigator?.viroAppProps?.hostStreamTag ?? null;
@@ -290,7 +323,7 @@ export const ConferenceScene = (props: {
 
       {/* Host stage — LEFT, large — grab anywhere to drag (FixedToWorld). */}
       <ViroNode position={[-1.05, -0.05, -1.5]} rotation={[0, 26, 0]} dragType="FixedToWorld" onDrag={() => {}}>
-        <Plate w={1.5} h={0.85} name="HOST" headerH={0.16} fontSize={40} />
+        <Plate w={1.5} h={0.85} name="HOST" role="host" headerH={0.16} fontSize={40} riveSource={plateSource} />
         {/* Live host feed over the cobalt screen. ALWAYS mounted, `visible`
             toggled (the scene's one-stable-mount rule — same as the skybox);
             16:9 inside the plate screen area, nudged forward past the plate. */}
@@ -318,10 +351,30 @@ export const ConferenceScene = (props: {
       <ViroNode position={[1.05, -0.05, -1.5]} rotation={[0, -26, 0]} dragType="FixedToWorld" onDrag={() => {}}>
         {GUEST_CENTERS.map(([x, y], i) => (
           <ViroNode key={i} position={[x, y, 0]}>
-            <Plate w={0.66} h={0.37} name={GUEST_NAMES[i]} headerH={0.085} fontSize={20} />
+            <Plate w={0.66} h={0.37} name={GUEST_NAMES[i]} role="guest" headerH={0.085} fontSize={20} riveSource={plateSource} />
           </ViroNode>
         ))}
       </ViroNode>
+
+      {hudSource ? (
+        <ViroRivePanel
+          source={hudSource}
+          width={0.86}
+          height={0.28}
+          position={[0, 0.35, -1.36]}
+          rotation={[10, 0, 0]}
+          resolution={{ width: 1024, height: 336 }}
+          androidRoute="ahb"
+          fallbackColor="#16294d"
+          bindings={{
+            'hud.title': 'DANGER ROOM',
+            'hud.mode': { kind: 'enum', value: passthrough ? 'passthrough' : 'immersive' },
+            'hud.themePlaying': theme === 'playing',
+            'hud.guestCount': GUEST_NAMES.length,
+          }}
+          onError={(error) => console.warn('[xr/rive] HUD failed', error.message)}
+        />
+      ) : null}
 
       {/* Env toggle + theme — CENTER. Theme button reflects live play state. */}
       <Btn
