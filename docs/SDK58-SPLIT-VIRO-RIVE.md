@@ -1,0 +1,69 @@
+# Expo 58 + fold-aware Split View + Viro/Rive migration
+
+## Runtime baseline
+
+- Expo SDK: `58.0.0` (`next` train on 2026-10-01).
+- React: `19.3.0`.
+- React Native: `0.88.0-rc.3`.
+- Expo Router: `~58.0.10`.
+- React Native Screens: `~4.28.0`.
+- Viro fork: `mikevocalz/viro@b4cd6aaf62ecc5f004f53da6ef271654cd19d044`.
+- Nitro canvas fork: `mikevocalz/nitro-canvas-in-Vision@20622edce8c1779bc09e0b8b0a8edfc2a446bcec`.
+
+Both fork dependencies are immutable git SHAs over SSH. A checkout needs GitHub credentials that can read both private repositories.
+
+## Split/fold behavior
+
+`src/roster/layout/RoomLayout.tsx` no longer guesses a 28 dp Surface Duo hinge. The local `ReservedRegions` Expo Modules 2 module publishes Android Jetpack WindowManager 1.5.1 folding geometry and iOS 27.1+ UIKit reserved regions.
+
+The React layer measures the actual RoomLayout row in window coordinates, converts native fold frames into row-local coordinates, filters off-row folds, and lays panes into physical regions. Two-region folds keep host/showcase together on one display and guests on the other. Three-or-more regions map host, showcase, and guests into separate physical regions so none crosses a hinge.
+
+This ports the latest Moyo adaptive patch, including the Sep. 30 pane-row-coordinate follow-up rather than the earlier width-only implementation.
+
+Expo Router's native `SplitView` remains alpha/iOS-only and cannot be nested under the app's existing root Stack or suppress/customize its header. The room uses the patch's fold-geometry layer directly rather than forcing that navigator into the full-screen conference UI.
+
+## Rive/Viro conversion
+
+The XR scene now mounts the fork's `ViroRivePanel` above the existing Viro roster plates. Existing geometry remains mounted underneath as a safe fallback.
+
+Set these Expo public environment variables to activate the authored Rive skin:
+
+- `EXPO_PUBLIC_DANGER_ROOM_RIVE_URL` — HTTPS URL to the compiled `.riv` file.
+- `EXPO_PUBLIC_DANGER_ROOM_RIVE_PLATE_ARTBOARD` — default `ParticipantPlate`.
+- `EXPO_PUBLIC_DANGER_ROOM_RIVE_HUD_ARTBOARD` — default `DangerRoomHUD`.
+- `EXPO_PUBLIC_DANGER_ROOM_RIVE_STATE_MACHINE` — default `Main`.
+
+The authored file should expose these View Model paths:
+
+- `participant.name` (string)
+- `participant.role` (string)
+- `participant.active` (boolean)
+- `hud.title` (string)
+- `hud.mode` (enum: `immersive` / `passthrough`)
+- `hud.themePlaying` (boolean)
+- `hud.guestCount` (number)
+
+The current Nitro deferred Rive path is Android/Quest-only and requires API 34+ plus the `ahb` canvas route. It uses the native frame clock and AHardwareBuffer path; there is no JavaScript pixel-copy loop.
+
+## Install / lockfile
+
+The SDK 57 `package-lock.json` is removed in this migration because it encodes the old Expo/RN graph and the old `file:../viro` sibling checkout. Regenerate it from an authenticated developer machine:
+
+```sh
+npm install
+npm run doctor
+npm run typecheck
+npx expo prebuild --clean
+```
+
+SDK 58 enables Android R8 release minification by default. This migration explicitly keeps `enableMinifyInReleaseBuilds: false` until the custom Viro/Nitro keep-rule pass is validated.
+
+## Device acceptance
+
+1. Phone portrait/landscape lobby and room.
+2. Android foldable flat, book, and tabletop postures.
+3. Surface Duo / dual-screen separation with no pane crossing the hinge.
+4. Trifold/multi-hinge geometry if hardware/emulator support is available.
+5. Quest passthrough toggle, host video texture, scene exit, and Rive plate/HUD rendering.
+6. Rive bindings update live when passthrough/theme state changes.
+7. Release Android build with the current R8 opt-out, then a separate keep-rule pass before re-enabling R8.
