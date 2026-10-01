@@ -1,33 +1,28 @@
 import { Platform } from 'react-native';
 import { useMemo } from 'react';
 import type { SharedValue } from 'react-native-reanimated';
-import { useSharedValue } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
 import { useFrameOutput } from 'react-native-vision-camera';
-import { useFaceDetector } from 'react-native-vision-camera-face-detector';
+import {
+  useFaceDetector,
+  type Face,
+} from 'react-native-vision-camera-face-detector';
 
-import { computeAnchor, NO_FACE, type FaceTickPayload } from './faceAnchor';
+import {
+  computeAnchor,
+  NO_FACE,
+  type FaceTickPayload,
+} from './faceAnchor';
 
-/**
- * Snapchat-style analysis lane:
- *
- * - camera publishing and face inference are different outputs;
- * - ML Kit gets a small 640x480 YUV stream instead of the published frame;
- * - new frames are dropped while inference is busy instead of building latency;
- * - the mask toggle gates inference inside the worklet without reconfiguring the
- *   camera session;
- * - detection is capped at 24 Hz. Reanimated interpolates those targets at the
- *   display refresh rate, so 60/90/120 Hz screens remain visually smooth.
- *
- * The detector stays react-native-vision-camera-face-detector. MediaPipe is a
- * precision tier for future mesh/blendshape filters, not an always-on second
- * detector.
- */
 const DETECTION_FPS = 24;
 const DETECTION_INTERVAL_MS = 1000 / DETECTION_FPS;
 
+interface DetectorState {
+  lastDetectionAt: number;
+  trackingId: number;
+}
+
 function primaryFaceIndex(
-  faces: ReturnType<ReturnType<typeof useFaceDetector>['detectFaces']>,
+  faces: Face[],
   trackingId: number,
 ): number {
   'worklet';
@@ -39,6 +34,8 @@ function primaryFaceIndex(
     }
   }
 
+  // Re-acquisition chooses the largest face instead of whichever ML Kit
+  // happens to return first.
   let best = 0;
   let bestArea = -1;
   for (let i = 0; i < faces.length; i += 1) {
@@ -53,9 +50,16 @@ function primaryFaceIndex(
   return best;
 }
 
+/**
+ * Dedicated low-cost analysis output.
+ *
+ * Nothing here publishes video. Fishjam's WebGPU output owns publishing; this
+ * output only updates the face target it reads. Keeping the two lanes separate
+ * guarantees a slow detector frame cannot delay an encoder frame.
+ */
 export function useFaceFilterOutput(
   enabled: SharedValue<boolean>,
-  onFaceTick: (tick: FaceTickPayload) => void,
+  faceTarget: SharedValue<FaceTickPayload>,
   facing: 'front' | 'back' = 'front',
 ) {
   const detectorOptions = useMemo(
@@ -73,8 +77,11 @@ export function useFaceFilterOutput(
   );
   const detector = useFaceDetector(detectorOptions);
 
-  const lastDetectionAt = useSharedValue(0);
-  const selectedTrackingId = useSharedValue(-1);
+  // Mutable worklet-local state, not React state and not a JS bridge.
+  const state = useMemo<DetectorState>(
+    () => ({ lastDetectionAt: 0, trackingId: -1 }),
+    [detector],
+  );
 
   return useFrameOutput({
     targetResolution: { width: 640, height: 480 },
@@ -87,25 +94,28 @@ export function useFaceFilterOutput(
       'worklet';
       try {
         if (!enabled.value) {
-          selectedTrackingId.value = -1;
+          state.trackingId = -1;
+          if (faceTarget.value.present) {
+            faceTarget.value = NO_FACE;
+          }
           return;
         }
 
         const now = performance.now();
-        if (now - lastDetectionAt.value < DETECTION_INTERVAL_MS) return;
-        lastDetectionAt.value = now;
+        if (now - state.lastDetectionAt < DETECTION_INTERVAL_MS) return;
+        state.lastDetectionAt = now;
 
         const faces = detector.detectFaces(frame);
-        const index = primaryFaceIndex(faces, selectedTrackingId.value);
+        const index = primaryFaceIndex(faces, state.trackingId);
         if (index < 0) {
-          selectedTrackingId.value = -1;
-          scheduleOnRN(onFaceTick, NO_FACE);
+          state.trackingId = -1;
+          faceTarget.value = NO_FACE;
           return;
         }
 
         const face = faces[index]!;
-        selectedTrackingId.value = face.trackingId ?? -1;
-        scheduleOnRN(onFaceTick, computeAnchor(face));
+        state.trackingId = face.trackingId ?? -1;
+        faceTarget.value = computeAnchor(face);
       } finally {
         frame.dispose();
       }
