@@ -4,7 +4,7 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 
 ## Fishjam + Viro notes
 
-**Fishjam (live rooms).** Fishjam is intentionally pinned at 0.29.0 because this repo carries versioned `patch-package` patches for that release. The camera path now uses VisionCamera 5.2.3. Two local Fishjam patches live in `patches/` and are applied by the `postinstall` step:
+**Fishjam (live rooms).** The npm sweep now uses `@fishjam-cloud/react-native-client@0.30.2`, `@fishjam-cloud/react-native-vision-camera-source@0.30.2`, and `@fishjam-cloud/react-native-webrtc@0.31.0`. The two Danger Room native fixes were rebased to those releases and remain under `patches/`; npm `overrides` forces one WebRTC 0.31.0 copy so the client package cannot pull a second native 0.30.x module. VisionCamera remains 5.2.3.
 
 - `@fishjam-cloud/react-native-vision-camera-source` — front-camera 180° rotation fix.
 - `@fishjam-cloud/react-native-webrtc` — native GL cowl compositor that bakes the face-tracked cowl into the published track, so guests see it too (Android only; the local preview stays the Reanimated overlay).
@@ -42,6 +42,8 @@ EXPO_PUBLIC_DANGER_ROOM_RIVE_STATE_MACHINE=Main
 The authored Rive View Model should expose `participant.name`, `participant.role`, `participant.active`, `hud.title`, `hud.mode`, `hud.themePlaying`, and `hud.guestCount`. See `docs/SDK58-SPLIT-VIRO-RIVE.md` for the full migration and foldable/Quest acceptance checklist.
 
 Native changes (`patches/`, local modules, config plugins, Viro/Nitro SHAs) require a rebuild; JS-only changes just need Metro (port 8090).
+
+**Dependency policy.** Registry packages are exact-pinned to the npm-current versions reviewed on October 1, 2026. Expo itself stays on SDK 58 / RN 0.88 instead of following npm's older stable Expo/RN tags backward. The private Viro and Nitro packages remain immutable Git SHAs.
 
 ## Get started
 
