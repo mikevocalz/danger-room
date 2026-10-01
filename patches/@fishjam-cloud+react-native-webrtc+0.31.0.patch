@@ -1,0 +1,786 @@
+diff --git a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java
+--- a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java
++++ b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/CustomVideoFrameDelivery.java
+@@ -358,17 +358,39 @@
+         // timestamp when JS did not supply one.
+         long stampNs = timestampNs != 0 ? timestampNs : System.nanoTime();
+ 
+-        // Ownership of {AHB, EGLImage, OES texture} now transfers to the frame's
+-        // release callback, fired when the encoder drops its last reference.
+-        ownedAhb[0] = 0;
+-        TextureBufferImpl buffer = new TextureBufferImpl(dimensions[0],
+-                dimensions[1],
+-                VideoFrame.TextureBuffer.Type.OES,
+-                textureId,
+-                TOP_DOWN_TEXTURE_MATRIX,
+-                glHandler,
+-                yuvConverter,
+-                () -> releaseForwardedFrame(eglImage, textureId, ahbHandle));
++        // DANGER-ROOM PATCH: composite the face-tracked overlay (if active)
++        // into a pooled RGBA texture on this same GL thread. >= 0 means we ship
++        // the composited RGB texture; -1 preserves Fishjam's OES path.
++        final int overlayTex =
++                OverlayCompositor.getInstance().compositeIfActive(
++                        textureId, dimensions[0], dimensions[1], rotation);
++
++        // Ownership of {AHB, EGLImage, OES texture} now transfers to the frame's
++        // release callback, fired when the encoder drops its last reference.
++        ownedAhb[0] = 0;
++        TextureBufferImpl buffer;
++        if (overlayTex >= 0) {
++            buffer = new TextureBufferImpl(dimensions[0],
++                    dimensions[1],
++                    VideoFrame.TextureBuffer.Type.RGB,
++                    overlayTex,
++                    TOP_DOWN_TEXTURE_MATRIX,
++                    glHandler,
++                    yuvConverter,
++                    () -> {
++                        releaseForwardedFrame(eglImage, textureId, ahbHandle);
++                        OverlayCompositor.getInstance().releaseOutput(overlayTex);
++                    });
++        } else {
++            buffer = new TextureBufferImpl(dimensions[0],
++                    dimensions[1],
++                    VideoFrame.TextureBuffer.Type.OES,
++                    textureId,
++                    TOP_DOWN_TEXTURE_MATRIX,
++                    glHandler,
++                    yuvConverter,
++                    () -> releaseForwardedFrame(eglImage, textureId, ahbHandle));
++        }
+         VideoFrame frame = new VideoFrame(buffer, rotation, stampNs);
+         try {
+             videoSource.getCapturerObserver().onFrameCaptured(frame);
+diff --git a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ExternalVideoSurfaces.java b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ExternalVideoSurfaces.java
+new file mode 100644
+index 0000000..f17303c
+--- /dev/null
++++ b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ExternalVideoSurfaces.java
+@@ -0,0 +1,98 @@
++package com.oney.WebRTCModule;
++
++import android.util.Log;
++import android.view.Surface;
++
++import org.webrtc.EglBase;
++import org.webrtc.EglRenderer;
++import org.webrtc.GlRectDrawer;
++import org.webrtc.MediaStream;
++import org.webrtc.VideoTrack;
++
++import java.util.HashMap;
++import java.util.Map;
++
++/**
++ * DANGER-ROOM PATCH — external Surface consumers for WebRTC video tracks.
++ *
++ * Static registry that renders a WebRTC {@link VideoTrack} into an arbitrary
++ * app-supplied {@link Surface}. The consumer (Viro's VRTExternalVideo, which
++ * exposes a virocore ExternalSurfaceTexture) calls {@link #provideSurface} /
++ * {@link #revokeSurface} REFLECTIVELY, so neither library takes a compile-time
++ * dependency on the other; the method signatures are the contract.
++ *
++ * key = the stream's react tag (JS: `mediaStream.toURL()`). The first video
++ * track of that stream is rendered into the Surface via an {@link EglRenderer}
++ * sharing the module's root EGL context.
++ *
++ * Threading: provideSurface may arrive from Viro's rendering thread; all
++ * WebRTC-touching work hops to the module's executor via ThreadUtils, matching
++ * getStreamForReactTag's "must be called in the executor" contract.
++ */
++public final class ExternalVideoSurfaces {
++
++    private static final String TAG = "ExternalVideoSurfaces";
++
++    /** Set by WebRTCModule's constructor (patched); needed for stream lookup. */
++    static volatile WebRTCModule sModule;
++
++    private static final class Sink {
++        EglRenderer renderer;
++        VideoTrack track;
++    }
++
++    private static final Map<String, Sink> sSinks = new HashMap<>();
++
++    private ExternalVideoSurfaces() {}
++
++    /**
++     * Render the first video track of the stream tagged {@code key} into
++     * {@code surface}. Called reflectively by the consumer; replaces any
++     * previous surface for the same key.
++     */
++    public static void provideSurface(String key, Surface surface, int width, int height) {
++        ThreadUtils.runOnExecutor(() -> {
++            revokeLocked(key);
++
++            WebRTCModule module = sModule;
++            if (module == null) {
++                Log.e(TAG, "provideSurface(" + key + "): WebRTCModule not initialized");
++                return;
++            }
++            MediaStream stream = module.getStreamForReactTag(key);
++            if (stream == null || stream.videoTracks.isEmpty()) {
++                Log.e(TAG, "provideSurface(" + key + "): no stream/video track for tag");
++                return;
++            }
++
++            Sink sink = new Sink();
++            sink.track = stream.videoTracks.get(0);
++            sink.renderer = new EglRenderer("ExternalVideoSurfaces:" + key);
++            sink.renderer.init(EglUtils.getRootEglBaseContext(),
++                    EglBase.CONFIG_PLAIN, new GlRectDrawer());
++            sink.renderer.createEglSurface(surface);
++            sink.track.addSink(sink.renderer);
++            sSinks.put(key, sink);
++            Log.i(TAG, "provideSurface(" + key + "): sink attached (" + width + "x" + height + ")");
++        });
++    }
++
++    /** Stop rendering for {@code key} and release the EGL surface + renderer. */
++    public static void revokeSurface(String key) {
++        ThreadUtils.runOnExecutor(() -> revokeLocked(key));
++    }
++
++    // Must be called on the executor.
++    private static void revokeLocked(String key) {
++        Sink sink = sSinks.remove(key);
++        if (sink == null) return;
++        try {
++            sink.track.removeSink(sink.renderer);
++        } catch (Exception e) {
++            Log.w(TAG, "removeSink failed (track disposed?)", e);
++        }
++        sink.renderer.releaseEglSurface(() -> {});
++        sink.renderer.release();
++        Log.i(TAG, "revokeSurface(" + key + "): sink released");
++    }
++}
+diff --git a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/OverlayCompositor.java b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/OverlayCompositor.java
+new file mode 100644
+index 0000000..aff63a3
+--- /dev/null
++++ b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/OverlayCompositor.java
+@@ -0,0 +1,567 @@
++package com.oney.WebRTCModule;
++
++import android.graphics.Bitmap;
++import android.graphics.BitmapFactory;
++import android.opengl.EGL14;
++import android.opengl.EGLContext;
++import android.opengl.GLES11Ext;
++import android.opengl.GLES20;
++import android.opengl.GLUtils;
++import android.util.Base64;
++import android.util.Log;
++
++/**
++ * Composites a face-tracked ARGB overlay (e.g. a cowl PNG) onto published camera
++ * frames so REMOTE peers see it.
++ *
++ * <p>The camera frame arrives as a {@code GL_TEXTURE_EXTERNAL_OES} texture (an
++ * imported AHardwareBuffer) which cannot be an FBO attachment, so compositing is
++ * done by DRAWING: camera quad + overlay quad into a fresh RGBA
++ * {@code GL_TEXTURE_2D} taken from a small pool, which is then shipped to the
++ * encoder as a {@code Type.RGB} {@link org.webrtc.TextureBufferImpl}.
++ *
++ * <h2>Threading</h2>
++ * State setters ({@link #setEnabled}, {@link #setFace}, {@link #setOverlayImage})
++ * may be called from any thread; {@link #compositeIfActive} runs ONLY on the
++ * custom-video GL thread (see {@link CustomVideoFrameDelivery}), whose EGL
++ * context shares with WebRTC's encoder context — so the pool textures created
++ * here are encoder-visible. {@link #releaseOutput} is thread-safe (no GL calls).
++ *
++ * <h2>Y-axis convention</h2>
++ * The camera pass is an IDENTITY copy: quad NDC(-1,-1) samples camera UV(0,0),
++ * so output texel row N == camera texel row N and the shipped buffer has the
++ * exact row order of the untouched OES path. Camera texel row 0 is the image
++ * TOP row, therefore in this FBO's NDC space y=-1 is the image TOP: image-space
++ * "y down from top" maps to NDC as {@code y_ndc = 2*y_px/height - 1} with NO
++ * flip. The overlay transform is built in that same y-down pixel space (and the
++ * overlay PNG uploads with its top row at v=0, so an un-rotated overlay quad is
++ * upright), which keeps the overlay pass in the SAME convention as the camera
++ * pass — the overlay lands exactly where the face is. Positive {@code roll}
++ * rotates the overlay clockwise on screen (y-down convention); negate on the JS
++ * side if the tracker uses the opposite sign.
++ */
++final class OverlayCompositor {
++    private static final String TAG = WebRTCModule.TAG;
++    private static final int POOL_SIZE = 3;
++
++    private static final OverlayCompositor INSTANCE = new OverlayCompositor();
++
++    static OverlayCompositor getInstance() {
++        return INSTANCE;
++    }
++
++    private OverlayCompositor() {}
++
++    // --- Cross-thread state (written from any thread, read on the GL thread). ---
++
++    /** Immutable face pose snapshot; frame-normalized (cx,cy in 0..1, iod = px/frameWidth). */
++    private static final class FaceState {
++        final boolean present;
++        final float cx;
++        final float cy;
++        final float iod;
++        final float roll;
++
++        FaceState(boolean present, float cx, float cy, float iod, float roll) {
++            this.present = present;
++            this.cx = cx;
++            this.cy = cy;
++            this.iod = iod;
++            this.roll = roll;
++        }
++    }
++
++    /** Immutable overlay template: anchor/iod measured in overlay-image pixels. */
++    private static final class Template {
++        final float tplIod;
++        final float anchorX;
++        final float anchorY;
++        final float imgW;
++        final float imgH;
++
++        Template(float tplIod, float anchorX, float anchorY, float imgW, float imgH) {
++            this.tplIod = tplIod;
++            this.anchorX = anchorX;
++            this.anchorY = anchorY;
++            this.imgW = imgW;
++            this.imgH = imgH;
++        }
++    }
++
++    private volatile boolean enabled = false;
++    private volatile FaceState face = null;
++    private volatile Template template = null;
++
++    /** Decoded overlay bitmap awaiting GL upload; guarded by {@code bitmapLock}. */
++    private final Object bitmapLock = new Object();
++    private Bitmap pendingBitmap = null;
++
++    /** Pool slot bookkeeping; guarded by {@code poolLock} (releaseOutput is any-thread). */
++    private final Object poolLock = new Object();
++    private final int[] poolTextures = new int[POOL_SIZE];
++    private final boolean[] poolBusy = new boolean[POOL_SIZE];
++
++    // --- GL objects; touched ONLY on the GL thread. ---
++
++    /** EGL context the GL objects were created in; re-init everything if it changes. */
++    private EGLContext glContext = EGL14.EGL_NO_CONTEXT;
++    private int programOes; // camera pass: samplerExternalOES
++    private int program2d; // overlay pass: sampler2D
++    private int quadVbo;
++    private int fbo;
++    private int overlayTexture; // GL_TEXTURE_2D holding the uploaded PNG
++    private int poolWidth;
++    private int poolHeight;
++
++    // Per-program locations (aPos/aUv/uTransform/uTex are the same names in both).
++    private int oesPosLoc, oesUvLoc, oesTransformLoc, oesTexLoc;
++    private int tdPosLoc, tdUvLoc, tdTransformLoc, tdTexLoc;
++
++    private static final float[] IDENTITY = {
++        1, 0, 0, 0,
++        0, 1, 0, 0,
++        0, 0, 1, 0,
++        0, 0, 0, 1,
++    };
++    private final float[] overlayTransform = new float[16];
++
++    // Shared vertex shader: quad local coords in [-1,1], uv in [0,1], CPU-built mat4.
++    private static final String VERTEX_SHADER = "attribute vec2 aPos;\n"
++            + "attribute vec2 aUv;\n"
++            + "uniform mat4 uTransform;\n"
++            + "varying vec2 vUv;\n"
++            + "void main() {\n"
++            + "  vUv = aUv;\n"
++            + "  gl_Position = uTransform * vec4(aPos, 0.0, 1.0);\n"
++            + "}\n";
++
++    private static final String FRAGMENT_SHADER_OES = "#extension GL_OES_EGL_image_external : require\n"
++            + "precision mediump float;\n"
++            + "varying vec2 vUv;\n"
++            + "uniform samplerExternalOES uTex;\n"
++            + "void main() { gl_FragColor = texture2D(uTex, vUv); }\n";
++
++    private static final String FRAGMENT_SHADER_2D = "precision mediump float;\n"
++            + "varying vec2 vUv;\n"
++            + "uniform sampler2D uTex;\n"
++            + "void main() { gl_FragColor = texture2D(uTex, vUv); }\n";
++
++    // --- Setters (any thread). ---
++
++    void setEnabled(boolean enabled) {
++        this.enabled = enabled;
++    }
++
++    void setFace(boolean present, double cx, double cy, double iod, double roll) {
++        this.face = new FaceState(present, (float) cx, (float) cy, (float) iod, (float) roll);
++    }
++
++    /**
++     * Decodes the overlay PNG on the calling thread and queues it for lazy GL
++     * upload on the GL thread. {@code imgW}/{@code imgH} are advisory (the decoded
++     * bitmap's own dimensions are authoritative for the quad, but the template's
++     * anchor/iod are expressed against the caller-declared image size, so we keep
++     * the declared size for the transform).
++     */
++    void setOverlayImage(String base64Png, double imgW, double imgH, double tplIod, double anchorX, double anchorY) {
++        Bitmap bitmap = null;
++        if (base64Png != null && !base64Png.isEmpty()) {
++            try {
++                byte[] bytes = Base64.decode(base64Png, Base64.DEFAULT);
++                bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
++            } catch (Exception e) {
++                Log.e(TAG, "OverlayCompositor: failed to decode overlay image", e);
++            }
++            if (bitmap == null) {
++                Log.e(TAG, "OverlayCompositor: overlay image decode returned null");
++                return;
++            }
++        }
++        this.template = new Template((float) tplIod, (float) anchorX, (float) anchorY, (float) imgW, (float) imgH);
++        synchronized (bitmapLock) {
++            if (pendingBitmap != null) {
++                pendingBitmap.recycle();
++            }
++            pendingBitmap = bitmap;
++        }
++    }
++
++    // --- Output pool (releaseOutput: any thread; no GL calls). ---
++
++    /** Frees the pool slot holding {@code texId}, making it reusable for a later frame. */
++    void releaseOutput(int texId) {
++        synchronized (poolLock) {
++            for (int i = 0; i < POOL_SIZE; i++) {
++                if (poolTextures[i] == texId) {
++                    poolBusy[i] = false;
++                    return;
++                }
++            }
++        }
++    }
++
++    // --- GL-thread entry point. ---
++
++    /**
++     * Composites camera + overlay into a pooled RGBA texture. MUST be called on
++     * the custom-video GL thread with its EGL context current.
++     *
++     * @return the composited GL_TEXTURE_2D id, or -1 to keep the original OES
++     *         path (disabled / no face / no overlay / pool exhausted / GL error).
++     *         A returned id MUST be handed back via {@link #releaseOutput(int)}.
++     */
++    int compositeIfActive(int oesTexId, int width, int height, int rotation) {
++        if (!enabled) {
++            return -1;
++        }
++        FaceState f = face;
++        Template t = template;
++        if (f == null || !f.present || t == null || t.tplIod <= 0 || width <= 0 || height <= 0) {
++            return -1;
++        }
++
++        try {
++            ensureGlObjects();
++            uploadPendingBitmap();
++            if (overlayTexture == 0) {
++                return -1; // no overlay image uploaded yet
++            }
++            ensurePool(width, height);
++
++            // Claim a free pool slot; if all 3 are still held by in-flight frames,
++            // pass the frame through uncomposited — never block the capture path.
++            int slot = -1;
++            synchronized (poolLock) {
++                for (int i = 0; i < POOL_SIZE; i++) {
++                    if (!poolBusy[i] && poolTextures[i] != 0) {
++                        slot = i;
++                        break;
++                    }
++                }
++                if (slot < 0) {
++                    return -1;
++                }
++                poolBusy[slot] = true;
++            }
++            int outTex = poolTextures[slot];
++
++            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo);
++            GLES20.glFramebufferTexture2D(
++                    GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, outTex, 0);
++            if (GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) != GLES20.GL_FRAMEBUFFER_COMPLETE) {
++                Log.e(TAG, "OverlayCompositor: FBO incomplete");
++                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
++                releaseOutput(outTex);
++                return -1;
++            }
++            GLES20.glViewport(0, 0, width, height);
++
++            // Pass 1: identity copy of the camera OES texture (see class comment
++            // for the row-order guarantee this establishes).
++            GLES20.glDisable(GLES20.GL_BLEND);
++            GLES20.glUseProgram(programOes);
++            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
++            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId);
++            GLES20.glUniform1i(oesTexLoc, 0);
++            GLES20.glUniformMatrix4fv(oesTransformLoc, 1, false, IDENTITY, 0);
++            drawQuad(oesPosLoc, oesUvLoc);
++            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0);
++
++            // Pass 2: overlay quad, premultiplied-alpha blend (Android decodes
++            // bitmaps premultiplied, so src factor is GL_ONE).
++            buildOverlayTransform(f, t, width, height, rotation);
++            GLES20.glEnable(GLES20.GL_BLEND);
++            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
++            GLES20.glUseProgram(program2d);
++            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
++            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexture);
++            GLES20.glUniform1i(tdTexLoc, 0);
++            GLES20.glUniformMatrix4fv(tdTransformLoc, 1, false, overlayTransform, 0);
++            drawQuad(tdPosLoc, tdUvLoc);
++
++            // Leave the shared GL thread's state clean for YuvConverter & friends.
++            GLES20.glDisable(GLES20.GL_BLEND);
++            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
++            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0);
++            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
++            GLES20.glUseProgram(0);
++            // Flush so the encoder context (share group) observes the writes.
++            GLES20.glFlush();
++            return outTex;
++        } catch (RuntimeException e) {
++            Log.e(TAG, "OverlayCompositor: composite failed", e);
++            return -1;
++        }
++    }
++
++    // --- GL helpers (GL thread only). ---
++
++    /**
++     * Overlay quad local coords p in [-1,1] map to overlay-image px (y down,
++     * p=(-1,-1) at the PNG's top-left), shift by the anchor, scale
++     * s = (iod*width)/tplIod (overlay px -> buffer px), rotate by roll about the
++     * anchor, translate to (cx*width, cy*height), then buffer px -> NDC. All in
++     * the y-down convention established by the camera pass (no flip).
++     */
++    private void buildOverlayTransform(FaceState f, Template t, int width, int height, int rotation) {
++        // f.* arrive in the detector's ROTATION-CORRECTED upright frame (MLKit /
++        // JS faceAnchor.ts: portrait ~0.75 on a portrait phone), but this buffer
++        // is sensor-oriented and VideoFrame(buffer, rotation, ..) rotates it
++        // DOWNSTREAM. Compositing display-space coords into the unrotated buffer
++        // is what painted the cowl rotated ~90deg, ~1.78x oversized and offset.
++        // Map upright -> buffer by the inverse of `rotation` (all y-down):
++        //   display = rotateCW(buffer, rotation)  =>  buffer = rotateCW^-1(display)
++        float ucx;
++        float ucy;
++        switch (rotation) {
++            case 90:  ucx = f.cy;      ucy = 1f - f.cx; break;
++            case 180: ucx = 1f - f.cx; ucy = 1f - f.cy; break;
++            case 270: ucx = 1f - f.cy; ucy = f.cx;      break;
++            default:  ucx = f.cx;      ucy = f.cy;      break;
++        }
++        // Angles rotate with the frame; distances don't. iod was normalized by
++        // the UPRIGHT frame width, which is the buffer's height when rotated 90/270.
++        float rollB = f.roll - (float) Math.toRadians(rotation);
++        float iodPx = f.iod * ((rotation % 180 != 0) ? height : width);
++        float s = iodPx / t.tplIod;
++        float cosR = (float) Math.cos(rollB);
++        float sinR = (float) Math.sin(rollB);
++        // p -> overlay px, anchor-relative: q = (a*px + b, c*py + d)
++        float a = t.imgW / 2f;
++        float b = t.imgW / 2f - t.anchorX;
++        float c = t.imgH / 2f;
++        float d = t.imgH / 2f - t.anchorY;
++        float cxPx = ucx * width;
++        float cyPx = ucy * height;
++        // buffer px -> NDC (y-down: row 0 == top == NDC y=-1)
++        float nx = 2f / width;
++        float ny = 2f / height;
++
++        // x_px = s*(cosR*qx - sinR*qy) + cxPx ; y_px = s*(sinR*qx + cosR*qy) + cyPx
++        float m00 = nx * s * cosR * a;
++        float m01 = nx * -s * sinR * c;
++        float m03 = nx * (s * (cosR * b - sinR * d) + cxPx) - 1f;
++        float m10 = ny * s * sinR * a;
++        float m11 = ny * s * cosR * c;
++        float m13 = ny * (s * (sinR * b + cosR * d) + cyPx) - 1f;
++
++        float[] m = overlayTransform;
++        // Column-major, as glUniformMatrix4fv(transpose=false) expects.
++        m[0] = m00;
++        m[1] = m10;
++        m[2] = 0;
++        m[3] = 0;
++        m[4] = m01;
++        m[5] = m11;
++        m[6] = 0;
++        m[7] = 0;
++        m[8] = 0;
++        m[9] = 0;
++        m[10] = 1;
++        m[11] = 0;
++        m[12] = m03;
++        m[13] = m13;
++        m[14] = 0;
++        m[15] = 1;
++    }
++
++    private void drawQuad(int posLoc, int uvLoc) {
++        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadVbo);
++        GLES20.glEnableVertexAttribArray(posLoc);
++        GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, 0);
++        GLES20.glEnableVertexAttribArray(uvLoc);
++        GLES20.glVertexAttribPointer(uvLoc, 2, GLES20.GL_FLOAT, false, 16, 8);
++        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
++        GLES20.glDisableVertexAttribArray(posLoc);
++        GLES20.glDisableVertexAttribArray(uvLoc);
++    }
++
++    /**
++     * Lazily (re)creates programs/VBO/FBO once per EGL context. Programs, VBOs and
++     * textures are share-group objects, FBOs are per-context — so on a context
++     * change we drop everything and rebuild (deleting stale share-group ids is a
++     * silent no-op if the whole share group died).
++     */
++    private void ensureGlObjects() {
++        EGLContext current = EGL14.eglGetCurrentContext();
++        if (glContext.equals(current) && programOes != 0) {
++            return;
++        }
++        releaseGlObjectsForContextChange();
++        glContext = current;
++
++        programOes = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER_OES);
++        oesPosLoc = GLES20.glGetAttribLocation(programOes, "aPos");
++        oesUvLoc = GLES20.glGetAttribLocation(programOes, "aUv");
++        oesTransformLoc = GLES20.glGetUniformLocation(programOes, "uTransform");
++        oesTexLoc = GLES20.glGetUniformLocation(programOes, "uTex");
++
++        program2d = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER_2D);
++        tdPosLoc = GLES20.glGetAttribLocation(program2d, "aPos");
++        tdUvLoc = GLES20.glGetAttribLocation(program2d, "aUv");
++        tdTransformLoc = GLES20.glGetUniformLocation(program2d, "uTransform");
++        tdTexLoc = GLES20.glGetUniformLocation(program2d, "uTex");
++
++        // Interleaved pos.xy + uv, triangle strip; NDC(-1,-1) carries UV(0,0).
++        float[] quad = {
++            -1, -1, 0, 0, //
++            1, -1, 1, 0, //
++            -1, 1, 0, 1, //
++            1, 1, 1, 1, //
++        };
++        java.nio.FloatBuffer quadBuffer = java.nio.ByteBuffer.allocateDirect(quad.length * 4)
++                .order(java.nio.ByteOrder.nativeOrder())
++                .asFloatBuffer()
++                .put(quad);
++        quadBuffer.rewind();
++        int[] ids = new int[1];
++        GLES20.glGenBuffers(1, ids, 0);
++        quadVbo = ids[0];
++        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadVbo);
++        GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, quad.length * 4, quadBuffer, GLES20.GL_STATIC_DRAW);
++        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0);
++
++        GLES20.glGenFramebuffers(1, ids, 0);
++        fbo = ids[0];
++    }
++
++    private void releaseGlObjectsForContextChange() {
++        // Best-effort deletes; ids from a fully dead share group are ignored by GL.
++        if (programOes != 0) {
++            GLES20.glDeleteProgram(programOes);
++            programOes = 0;
++        }
++        if (program2d != 0) {
++            GLES20.glDeleteProgram(program2d);
++            program2d = 0;
++        }
++        if (quadVbo != 0) {
++            GLES20.glDeleteBuffers(1, new int[] {quadVbo}, 0);
++            quadVbo = 0;
++        }
++        if (overlayTexture != 0) {
++            GLES20.glDeleteTextures(1, new int[] {overlayTexture}, 0);
++            overlayTexture = 0;
++            // The GL copy is gone; re-queue the template image next time one is set.
++        }
++        synchronized (poolLock) {
++            for (int i = 0; i < POOL_SIZE; i++) {
++                if (poolTextures[i] != 0) {
++                    GLES20.glDeleteTextures(1, new int[] {poolTextures[i]}, 0);
++                    poolTextures[i] = 0;
++                }
++                poolBusy[i] = false;
++            }
++        }
++        poolWidth = 0;
++        poolHeight = 0;
++        fbo = 0; // per-context object; died with the old context
++    }
++
++    /** Uploads a pending overlay bitmap into {@link #overlayTexture}, then recycles it. */
++    private void uploadPendingBitmap() {
++        Bitmap bitmap;
++        synchronized (bitmapLock) {
++            bitmap = pendingBitmap;
++            pendingBitmap = null;
++        }
++        if (bitmap == null) {
++            return;
++        }
++        if (overlayTexture == 0) {
++            int[] ids = new int[1];
++            GLES20.glGenTextures(1, ids, 0);
++            overlayTexture = ids[0];
++        }
++        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexture);
++        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
++        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
++        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
++        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
++        // Uploads premultiplied (Android's default bitmap config); row 0 -> v=0.
++        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
++        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
++        bitmap.recycle();
++    }
++
++    /**
++     * (Re)allocates the output pool for the given frame size. On a size change,
++     * only reallocates once every slot is free — deleting a texture an in-flight
++     * frame still references would hand the encoder a dead texture.
++     */
++    private void ensurePool(int width, int height) {
++        if (poolWidth == width && poolHeight == height && poolTextures[0] != 0) {
++            return;
++        }
++        synchronized (poolLock) {
++            for (int i = 0; i < POOL_SIZE; i++) {
++                if (poolBusy[i]) {
++                    return; // in-flight frames still hold old-size textures; retry later
++                }
++            }
++            for (int i = 0; i < POOL_SIZE; i++) {
++                if (poolTextures[i] != 0) {
++                    GLES20.glDeleteTextures(1, new int[] {poolTextures[i]}, 0);
++                    poolTextures[i] = 0;
++                }
++            }
++            int[] ids = new int[POOL_SIZE];
++            GLES20.glGenTextures(POOL_SIZE, ids, 0);
++            for (int i = 0; i < POOL_SIZE; i++) {
++                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[i]);
++                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
++                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
++                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
++                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
++                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,
++                        0,
++                        GLES20.GL_RGBA,
++                        width,
++                        height,
++                        0,
++                        GLES20.GL_RGBA,
++                        GLES20.GL_UNSIGNED_BYTE,
++                        null);
++                poolTextures[i] = ids[i];
++                poolBusy[i] = false;
++            }
++            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
++            poolWidth = width;
++            poolHeight = height;
++        }
++    }
++
++    private static int buildProgram(String vertexSource, String fragmentSource) {
++        int vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSource);
++        int fs = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource);
++        int program = GLES20.glCreateProgram();
++        GLES20.glAttachShader(program, vs);
++        GLES20.glAttachShader(program, fs);
++        GLES20.glLinkProgram(program);
++        // Shaders are owned by the program from here on.
++        GLES20.glDeleteShader(vs);
++        GLES20.glDeleteShader(fs);
++        int[] linked = new int[1];
++        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linked, 0);
++        if (linked[0] != GLES20.GL_TRUE) {
++            String log = GLES20.glGetProgramInfoLog(program);
++            GLES20.glDeleteProgram(program);
++            throw new RuntimeException("OverlayCompositor: program link failed: " + log);
++        }
++        return program;
++    }
++
++    private static int compileShader(int type, String source) {
++        int shader = GLES20.glCreateShader(type);
++        GLES20.glShaderSource(shader, source);
++        GLES20.glCompileShader(shader);
++        int[] compiled = new int[1];
++        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0);
++        if (compiled[0] != GLES20.GL_TRUE) {
++            String log = GLES20.glGetShaderInfoLog(shader);
++            GLES20.glDeleteShader(shader);
++            throw new RuntimeException("OverlayCompositor: shader compile failed: " + log);
++        }
++        return shader;
++    }
++}
+diff --git a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+--- a/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
++++ b/node_modules/@fishjam-cloud/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+@@ -84,9 +84,12 @@
+ 
+     public WebRTCModule(ReactApplicationContext reactContext) {
+         super(reactContext);
+-        mPeerConnectionObservers = new SparseArray<>();
+-        localStreams = new HashMap<>();
+-        audioExtractionController = new AudioExtractionController(reactContext, this::getTrack);
++        mPeerConnectionObservers = new SparseArray<>();
++        localStreams = new HashMap<>();
++        // DANGER-ROOM PATCH: let Viro resolve a WebRTC stream by react tag and
++        // render it into an externally supplied Surface without a hard dependency.
++        ExternalVideoSurfaces.sModule = this;
++        audioExtractionController = new AudioExtractionController(reactContext, this::getTrack);
+ 
+         WebRTCModuleOptions options = WebRTCModuleOptions.getInstance();
+ 
+@@ -1904,10 +1904,29 @@
+         return voipController.getPendingIncomingCall();
+     }
+ 
+-    @ReactMethod
+-    public void clearPendingIncomingCall(Promise promise) {
+-        voipController.clearPendingIncomingCall();
+-        promise.resolve(null);
+-    }
+-}
++    @ReactMethod
++    public void clearPendingIncomingCall(Promise promise) {
++        voipController.clearPendingIncomingCall();
++        promise.resolve(null);
++    }
++
++    // --- DANGER-ROOM PATCH: face-tracked publish compositor. ---
++
++    @ReactMethod
++    public void overlaySetImage(
++            String base64Png, double imgW, double imgH, double tplIod, double anchorX, double anchorY) {
++        OverlayCompositor.getInstance().setOverlayImage(
++                base64Png, imgW, imgH, tplIod, anchorX, anchorY);
++    }
++
++    @ReactMethod
++    public void overlaySetFace(boolean present, double cx, double cy, double iod, double roll) {
++        OverlayCompositor.getInstance().setFace(present, cx, cy, iod, roll);
++    }
++
++    @ReactMethod
++    public void overlaySetEnabled(boolean enabled) {
++        OverlayCompositor.getInstance().setEnabled(enabled);
++    }
++}
+ 
