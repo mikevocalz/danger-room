@@ -52,6 +52,10 @@ ViroMaterials.createMaterials({
   // the WebRTC-fed ExternalSurfaceTexture at runtime; the color is the pre-video
   // placeholder tint.
   hostVideo: { diffuseColor: '#0a1830', lightingModel: 'Constant' },
+  guestVideo0: { diffuseColor: '#0a1830', lightingModel: 'Constant' },
+  guestVideo1: { diffuseColor: '#0a1830', lightingModel: 'Constant' },
+  guestVideo2: { diffuseColor: '#0a1830', lightingModel: 'Constant' },
+  guestVideo3: { diffuseColor: '#0a1830', lightingModel: 'Constant' },
   header: { diffuseColor: '#eec645', lightingModel: 'Constant' },
   toggle: { diffuseColor: '#3b1f7a', lightingModel: 'Constant' },
   toggleOn: { diffuseColor: '#7c4dff', lightingModel: 'Constant' },
@@ -200,7 +204,7 @@ const Label = ({
 
 /** A roster-console plate: cream frame, cobalt screen, gold header, name centred. */
 const Plate = ({
-  w, h, name, headerH, fontSize, role = 'guest', riveSource,
+  w, h, name, headerH, fontSize, role = 'guest', riveSource, videoMaterial,
 }: {
   w: number;
   h: number;
@@ -209,6 +213,7 @@ const Plate = ({
   fontSize: number;
   role?: 'host' | 'guest';
   riveSource?: RiveCanvasOptions | null;
+  videoMaterial?: string;
 }) => {
   const inset = 0.02;
   const screenH = h - headerH - inset;
@@ -222,13 +227,21 @@ const Plate = ({
       <ViroQuad width={w} height={h} materials={['frame']} />
       <ViroQuad width={w - inset * 2} height={headerH} position={[0, headerY, 0.006]} materials={['header']} />
       <ViroQuad width={w - inset * 2} height={screenH} position={[0, screenY, 0.004]} materials={['screen']} />
+      {videoMaterial ? (
+        <ViroQuad
+          width={w - inset * 2}
+          height={screenH}
+          position={[0, screenY, 0.009]}
+          materials={[videoMaterial]}
+        />
+      ) : null}
       <Label text={name.toUpperCase()} pw={w - 0.1} ph={headerH} fontSize={fontSize} color="#16294d" y={headerY - headerH * 0.22} />
       {riveSource ? (
         <ViroRivePanel
           source={riveSource}
           width={w - inset * 2}
           height={h - inset * 2}
-          position={[0, 0, 0.01]}
+          position={[0, 0, 0.016]}
           resolution={{ width: resolutionWidth, height: resolutionHeight }}
           androidRoute="ahb"
           fallbackColor="#16294d"
@@ -281,8 +294,21 @@ const onCam = (t: unknown) => {
  * stays alive) → transparent clear → the REAL ROOM (navigator: passthroughEnabled
  * + hdr/bloom/pbr off). visible=true → the Danger Room wraps back around you.
  */
+type XrParticipant = {
+  id: string;
+  name: string;
+  role: 'host' | 'guest';
+  streamTag: string | null;
+  sharing?: boolean;
+};
+
 export const ConferenceScene = (props: {
-  sceneNavigator?: { viroAppProps?: { hostStreamTag?: string | null } };
+  sceneNavigator?: {
+    viroAppProps?: {
+      hostParticipant?: XrParticipant | null;
+      guestParticipants?: XrParticipant[];
+    };
+  };
 }) => {
   const [passthrough, setPassthrough] = useState(false);
   const [theme, setTheme] = useState(getThemeState());
@@ -292,9 +318,11 @@ export const ConferenceScene = (props: {
   useEffect(() => {
     if (riveError) console.warn('[xr/rive] falling back to native geometry:', riveError);
   }, [riveError]);
-  // Host's RN-webrtc stream tag, delivered from xr.tsx via viroAppProps (a
-  // string, so it crosses the navigator boundary regardless of React roots).
-  const hostStreamTag = props.sceneNavigator?.viroAppProps?.hostStreamTag ?? null;
+  const hostParticipant =
+    props.sceneNavigator?.viroAppProps?.hostParticipant ?? null;
+  const guestParticipants =
+    props.sceneNavigator?.viroAppProps?.guestParticipants ?? [];
+  const hostStreamTag = hostParticipant?.streamTag ?? null;
 
   return (
     <ViroARScene onCameraTransformUpdate={onCam}>
@@ -323,16 +351,15 @@ export const ConferenceScene = (props: {
 
       {/* Host stage — LEFT, large — grab anywhere to drag (FixedToWorld). */}
       <ViroNode position={[-1.05, -0.05, -1.5]} rotation={[0, 26, 0]} dragType="FixedToWorld" onDrag={() => {}}>
-        <Plate w={1.5} h={0.85} name="HOST" role="host" headerH={0.16} fontSize={40} riveSource={plateSource} />
-        {/* Live host feed over the cobalt screen. ALWAYS mounted, `visible`
-            toggled (the scene's one-stable-mount rule — same as the skybox);
-            16:9 inside the plate screen area, nudged forward past the plate. */}
-        <ViroQuad
-          width={1.42}
-          height={0.62}
-          position={[0, -0.09, 0.012]}
-          materials={['hostVideo']}
-          visible={!!hostStreamTag}
+        <Plate
+          w={1.5}
+          h={0.85}
+          name={hostParticipant?.name ?? 'HOST'}
+          role="host"
+          headerH={0.16}
+          fontSize={40}
+          riveSource={plateSource}
+          videoMaterial={hostStreamTag ? 'hostVideo' : undefined}
         />
       </ViroNode>
 
@@ -347,14 +374,41 @@ export const ConferenceScene = (props: {
         />
       ) : null}
 
-      {/* Guest grid — RIGHT (2×2) — whole grid drags as one panel. */}
+      {/* Guest grid — RIGHT (2×2). Each Fishjam stream feeds a Viro material;
+          the Rive plate is the front-most transparent chrome layer. */}
       <ViroNode position={[1.05, -0.05, -1.5]} rotation={[0, -26, 0]} dragType="FixedToWorld" onDrag={() => {}}>
-        {GUEST_CENTERS.map(([x, y], i) => (
-          <ViroNode key={i} position={[x, y, 0]}>
-            <Plate w={0.66} h={0.37} name={GUEST_NAMES[i]} role="guest" headerH={0.085} fontSize={20} riveSource={plateSource} />
-          </ViroNode>
-        ))}
+        {GUEST_CENTERS.map(([x, y], i) => {
+          const participant = guestParticipants[i];
+          return (
+            <ViroNode key={participant?.id ?? i} position={[x, y, 0]}>
+              <Plate
+                w={0.66}
+                h={0.37}
+                name={participant?.name ?? GUEST_NAMES[i]}
+                role="guest"
+                headerH={0.085}
+                fontSize={20}
+                riveSource={plateSource}
+                videoMaterial={participant?.streamTag ? `guestVideo${i}` : undefined}
+              />
+            </ViroNode>
+          );
+        })}
       </ViroNode>
+
+      {guestParticipants.slice(0, 4).map((participant, i) =>
+        participant.streamTag ? (
+          <ViroExternalVideo
+            key={participant.id}
+            material={`guestVideo${i}`}
+            sourceKey={participant.streamTag}
+            pixelSize={{ width: 960, height: 540 }}
+            onError={(e) =>
+              console.warn('[xr] guest video bind failed', participant.name, e.nativeEvent?.error)
+            }
+          />
+        ) : null,
+      )}
 
       {hudSource ? (
         <ViroRivePanel
@@ -370,7 +424,7 @@ export const ConferenceScene = (props: {
             'hud.title': 'DANGER ROOM',
             'hud.mode': { kind: 'enum', value: passthrough ? 'passthrough' : 'immersive' },
             'hud.themePlaying': theme === 'playing',
-            'hud.guestCount': GUEST_NAMES.length,
+            'hud.guestCount': guestParticipants.length,
           }}
           onError={(error) => console.warn('[xr/rive] HUD failed', error.message)}
         />
