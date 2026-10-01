@@ -35,7 +35,7 @@ export const ChatSheet = forwardRef<BottomSheetModal, { username: string }>(
 
     // Uncontrolled input — draft in a ref (no component state).
     const draft = useRef('');
-    const inputRef = useRef<TextInput>(null);
+    const inputRef = useRef<{ clear(): void } | null>(null);
 
     useEffect(() => {
       try {

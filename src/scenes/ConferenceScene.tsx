@@ -297,7 +297,7 @@ export const ConferenceScene = (props: {
           material="hostVideo"
           sourceKey={hostStreamTag}
           pixelSize={{ width: 1280, height: 720 }}
-          onError={(e) => console.warn('[xr] host video bind failed', e.nativeEvent?.error)}
+          onError={(e: { nativeEvent?: { error?: string } }) => console.warn('[xr] host video bind failed', e.nativeEvent?.error)}
         />
       ) : null}
 

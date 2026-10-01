@@ -45,6 +45,7 @@ export const HAS_PUBLISH_COWL = !!native?.overlaySetEnabled;
 /** Template PNG → base64 via Metro/asset URI (fetch → blob → FileReader). */
 async function loadCowlBase64(): Promise<string> {
   const src = Image.resolveAssetSource(require('../../../assets/models/wolverine_cowl.png'));
+  if (!src?.uri) throw new Error('cowl asset unavailable');
   const blob = await (await fetch(src.uri)).blob();
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();

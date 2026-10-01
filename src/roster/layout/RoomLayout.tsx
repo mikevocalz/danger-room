@@ -7,12 +7,12 @@ export interface RoomLayoutProps { host: ReactNode; showcase: ReactNode; guests:
 type RowFrame = { x: number; y: number; width: number; height: number };
 
 export const RoomLayout = ({ host, showcase, guests }: RoomLayoutProps) => {
-  const rowRef = useRef<View>(null);
+  const rowRef = useRef<React.ElementRef<typeof View>>(null);
   const regions = useReservedRegions();
   const window = useWindowDimensions();
   const [row, setRow] = useState<RowFrame | null>(null);
   const measure = useCallback((_e?: LayoutChangeEvent) => requestAnimationFrame(() => {
-    rowRef.current?.measureInWindow((x,y,width,height) => setRow((old) =>
+    rowRef.current?.measureInWindow((x: number, y: number, width: number, height: number) => setRow((old) =>
       old && old.x === x && old.y === y && old.width === width && old.height === height
         ? old : { x,y,width,height }));
   }), []);

@@ -23,8 +23,11 @@ export async function startTheme(): Promise<void> {
     gain.gain.value = 1;
     gain.connect(ctx.destination);
 
-    const introUri = Image.resolveAssetSource(INTRO).uri;
-    const fullUri = Image.resolveAssetSource(THEME).uri;
+    const introAsset = Image.resolveAssetSource(INTRO);
+    const fullAsset = Image.resolveAssetSource(THEME);
+    if (!introAsset?.uri || !fullAsset?.uri) throw new Error('theme assets unavailable');
+    const introUri = introAsset.uri;
+    const fullUri = fullAsset.uri;
 
     // Intro: tiny file, decodes fast → audible on the first frame.
     const introBuf = await decodeAudioData(introUri);

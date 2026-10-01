@@ -76,7 +76,9 @@ export async function startTheme(): Promise<void> {
     const { AudioContext, decodeAudioData } = require('react-native-audio-api');
     core.ctx ??= new AudioContext();
     if (core.ctx.state === 'suspended') await core.ctx.resume();
-    core.buffer ??= await decodeAudioData(Image.resolveAssetSource(THEME).uri);
+    const themeAsset = Image.resolveAssetSource(THEME);
+    if (!themeAsset?.uri) throw new Error('XR theme asset unavailable');
+    core.buffer ??= await decodeAudioData(themeAsset.uri);
     if (!core.starting) return; // lost the race with stopTheme() during decode
     core.gain = core.ctx.createGain();
     core.gain.gain.value = THEME_VOLUME;

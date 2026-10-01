@@ -49,8 +49,10 @@ async function applyTextures(root: THREE.Object3D): Promise<void> {
       std.needsUpdate = true;
       const mod = MATERIAL_TEXTURES[std.name];
       if (!mod) return;
+      const textureAsset = Image.resolveAssetSource(mod);
+      if (!textureAsset?.uri) return;
       tasks.push(
-        loadTexture(Image.resolveAssetSource(mod).uri)
+        loadTexture(textureAsset.uri)
           .then(tex => {
             std.map = tex;
             std.needsUpdate = true;
@@ -124,7 +126,9 @@ async function loadCharacter(name: string, targetHeight: number): Promise<THREE.
   if (!mod) return null;
   let group = cache.get(name);
   if (!group) {
-    const uri = Image.resolveAssetSource(mod).uri;
+    const asset = Image.resolveAssetSource(mod);
+    if (!asset?.uri) return null;
+    const uri = asset.uri;
     // three's FileLoader uses browser XHR/ProgressEvent (absent in RN); fetch the
     // GLB ourselves and hand the ArrayBuffer to GLTFLoader.parse instead.
     const buffer = await (await fetch(uri)).arrayBuffer();

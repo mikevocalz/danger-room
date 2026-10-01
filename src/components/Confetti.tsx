@@ -55,8 +55,8 @@ interface P {
 const Fly = ({ emoji, p, life }: { emoji: string; p: P; life: number }) => (
   <Motion.View
     style={[styles.fly, { left: p.left, top: p.top }]}
-    initial={{ opacity: 0, translateX: 0, translateY: 0, scale: 0.4, rotate: '0deg' }}
-    animate={{ opacity: 1, translateX: p.dx, translateY: p.dy, scale: 1.05, rotate: `${p.rot}deg` }}
+    initial={{ opacity: 0, transform: [{ translateX: 0 }, { translateY: 0 }, { scale: 0.4 }, { rotate: '0deg' }] }}
+    animate={{ opacity: 1, transform: [{ translateX: p.dx }, { translateY: p.dy }, { scale: 1.05 }, { rotate: `${p.rot}deg` }] }}
     transition={{ type: 'timing', duration: life, delay: p.delay }}
   >
     <Text style={{ fontSize: p.size }}>{emoji}</Text>
