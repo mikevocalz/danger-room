@@ -48,16 +48,34 @@ export default function XrEntry() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Host's live stream → its RN-webrtc stream tag. The tag (a string) is what
-  // crosses into the Viro scene; native side resolves it back to the track.
-  const host = peers.find((p) => (p.metadata as RoomPeerMetadata | undefined)?.role === 'host');
+  // Every live peer crosses the React-root/Viro boundary as plain serializable
+  // metadata + an RN-webrtc stream tag. ViroExternalVideo resolves that tag
+  // natively back to the real VideoTrack and renders straight into a Surface.
   const streamOf = (p: {
     customVideoTracks?: { stream: MediaStream | null }[];
     cameraTrack?: { stream: MediaStream | null };
     screenShareVideoTrack?: { stream: MediaStream | null };
   }): MediaStream | null =>
     p.screenShareVideoTrack?.stream ?? p.customVideoTracks?.[0]?.stream ?? p.cameraTrack?.stream ?? null;
-  const hostStreamTag = host ? streamOf(host)?.toURL() ?? null : null;
+
+  const participants = peers
+    .map((peer) => {
+      const metadata = peer.metadata as RoomPeerMetadata | undefined;
+      const stream = streamOf(peer);
+      return {
+        id: peer.id,
+        name: metadata?.username ?? 'GUEST',
+        role: metadata?.role === 'host' ? ('host' as const) : ('guest' as const),
+        streamTag: stream?.toURL() ?? null,
+        sharing: Boolean(peer.screenShareVideoTrack?.stream),
+      };
+    })
+    .filter((peer) => peer.streamTag !== null);
+
+  const hostParticipant = participants.find((peer) => peer.role === 'host') ?? null;
+  const guestParticipants = participants
+    .filter((peer) => peer.role !== 'host')
+    .slice(0, 4);
 
   useEffect(() => {
     if (!viro) return;
@@ -84,7 +102,7 @@ export default function XrEntry() {
     <View style={styles.root}>
       <viro.Navigator
         initialScene={{ scene: viro.scene }}
-        viroAppProps={{ hostStreamTag }}
+        viroAppProps={{ hostParticipant, guestParticipants }}
         passthroughEnabled
         hdrEnabled={false}
         bloomEnabled={false}
