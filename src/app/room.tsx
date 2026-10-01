@@ -26,17 +26,12 @@ import { makeCircledX } from '@/roster/glyphs';
 import { ShowcaseCard } from '@/components/ShowcaseCard';
 import { ChatSheet } from '@/components/ChatSheet';
 import { RoomSkeleton } from '@/components/RoomSkeleton';
-import { CRTOverlay } from '@/components/CRTOverlay';
-import { MaskOverlay } from '@/components/MaskOverlay';
 import { ReactionsBar, ReactionsOverlay, useReactionsChannel } from '@/components/Reactions';
 import type { ReactionKind } from '@/stores/reactionStore';
 import { CleanCapture } from '@/roster/camera/CleanCapture';
-import { useMaskFilters, type FilteredFace } from '@/roster/camera/useMaskFilters';
-import type { FaceTickPayload } from '@/roster/camera/faceAnchor';
-import { useGuestCameraSource, useTrackedGuestCameraSource } from '@/roster/camera/usePublishSource';
-import {
-  enablePublishCowl, disablePublishCowl, pushCowlFace, HAS_PUBLISH_COWL,
-} from '@/roster/camera/publishCowl';
+import { NO_FACE, type FaceTickPayload } from '@/roster/camera/faceAnchor';
+import { useGuestCameraSource, useHostEffectsCameraSource } from '@/roster/camera/usePublishSource';
+import { useFaceFilterOutput } from '@/roster/camera/useFaceFilterOutput';
 import { useChatStore } from '@/stores/chatStore';
 import { useRoomStore } from '@/stores/roomStore';
 import { useFilterStore } from '@/stores/filterStore';
@@ -308,60 +303,44 @@ const HostStage = ({
   } = useScreenShare();
   const sharing = !!screenTrack;
   const mask = useFilterStore((s) => s.mask);
+  const crt = useFilterStore((s) => s.crt);
   const trackFace = host && mask && !sharing;
-  // Frame-sync tracking (FaceBlurApp pattern): detection runs in the publish
-  // source's onFrame worklet, gated by this shared value — so the MASK toggle
-  // never touches the camera session and the old remount seam (§3.1/§6.2,
-  // MaskedCapture/CleanCapture) is gone. §9 still holds: the publish source is
-  // owned HERE and never remounts.
+
+  // Stable worklet gates. Toggling CRT/mask does not rebuild CameraSession.
   const trackFaceSV = useSharedValue(false);
-  useEffect(() => { trackFaceSV.value = trackFace; }, [trackFace, trackFaceSV]);
-
-  // §6.9 — mirror mask state into the native publish-side compositor (Android;
-  // no-op elsewhere) so remote peers get the cowl baked into the track.
+  const crtSV = useSharedValue(false);
   useEffect(() => {
-    if (trackFace) {
-      enablePublishCowl().catch((e) => console.warn('[room] publish cowl failed', e));
-    } else {
-      disablePublishCowl();
-    }
-  }, [trackFace]);
+    trackFaceSV.value = trackFace;
+    crtSV.value = host && crt && !sharing;
+  }, [trackFace, host, crt, sharing, trackFaceSV, crtSV]);
 
-  // §6.1 — filtered tracking channels; MaskOverlay derives the transform.
-  // ponytail: ONE shared value, not seven. Seven `withTiming` writes per detector
-  // tick was ~182 JS→UI animation starts/sec and was a main source of the lag;
-  // this is one plain write per tick. One Euro (below) already does the smoothing.
-  const face = useSharedValue<FilteredFace>({
-    present: false, cx: 0.5, cy: 0.42, iod: 0, aspect: 1, roll: 0, yaw: 0, pitch: 0,
-  });
-  const filters = useMaskFilters();
-  // ponytail: TEMPORARY registration probe. frameToView assumes the DETECTOR's
-  // frame and the video well share an orientation; if the detector hands back a
-  // landscape frame while the well is portrait, the cover math registers the cowl
-  // to the wrong place and it "doesn't fit". Logs once per aspect change, so a
-  // mismatch shows up as a= far from well=. Delete once the fit is right.
-  const wellRef = useRef({ width: 0, height: 0 }); // assigned below, once vwSize exists
-  const maskDbg = useRef('');
-  const onFaceTick = useCallback(
-    (t: FaceTickPayload) => {
-      const f = filters.step(t);
-      if (__DEV__ && f.present) {
-        const w = wellRef.current;
-        const key = `a=${f.aspect.toFixed(2)} well=${(w.width / (w.height || 1)).toFixed(2)}`;
-        if (key !== maskDbg.current) {
-          maskDbg.current = key;
-          console.log(`[mask] ${key} iod=${f.iod.toFixed(3)} cx=${f.cx.toFixed(2)} cy=${f.cy.toFixed(2)}`);
-        }
-      }
-      pushCowlFace(f); // §6.9 — same filtered channels to the native compositor
-      face.value = f.present ? f : { ...f, iod: 0 }; // iod 0 ⇒ overlay fades out
-    },
-    [filters, face],
-  );
+  // Detector writes this shared target directly from its worklet. Fishjam's
+  // WebGPU publish worklet reads it and performs the final display/publish
+  // smoothing before encoding the cowl.
+  const face = useSharedValue<FaceTickPayload>({ ...NO_FACE });
 
   const cameraFacing = useFilterStore((s) => s.cameraFacing);
-  // Publish source + frame-sync detection in ONE camera output.
-  const { frameOutput, stream } = useTrackedGuestCameraSource(trackFaceSV, onFaceTick, cameraFacing);
+  const {
+    frameOutput,
+    stream,
+    ready: effectsReady = false,
+    error: effectsError,
+  } = useHostEffectsCameraSource({
+    crtOn: crtSV,
+    maskOn: trackFaceSV,
+    face,
+  });
+  const faceOutput = useFaceFilterOutput(
+    trackFaceSV,
+    face,
+    cameraFacing,
+  );
+
+  useEffect(() => {
+    if (effectsError) {
+      console.warn('[room] Fishjam WebGPU effect pipeline failed', effectsError);
+    }
+  }, [effectsError]);
 
   const toggleShare = async () => {
     try {
@@ -384,12 +363,9 @@ const HostStage = ({
     }
   };
 
-  const crt = useFilterStore((s) => s.crt);
   const cameraOn = useFilterStore((s) => s.cameraOn);
   const flipCamera = useFilterStore((s) => s.flipCamera);
   const toggleCamera = useFilterStore((s) => s.toggleCamera);
-  const [vwSize, setVwSize] = useState({ width: 0, height: 0 });
-  wellRef.current = vwSize; // feeds the [mask] registration probe above
 
   // Audio: start the mic once so the room hears the host; MUTE stops the mic
   // (the RN client drops toggleMicrophoneMute — off === muted, no audio published).
@@ -403,11 +379,16 @@ const HostStage = ({
   const front = cameraFacing === 'front';
   return (
     <View style={styles.stage}>
-      {/* ONE stable capture driver. Detection lives in the publish worklet
-          (useTrackedGuestCameraSource), so there is no mask-keyed remount —
-          only a lens flip recreates the session (facing key inside). */}
-      <CleanCapture frameOutput={frameOutput} facing={cameraFacing} enabled={cameraOn} />
-      <View style={styles.videoWrap} onLayout={(e) => setVwSize(e.nativeEvent.layout)}>
+      {/* One CameraSession, two stable outputs: Fishjam WebGPU publish + low-res
+          face analysis. Published pixels are also the local RTC self-view, so
+          CRT/cowl never need a second React overlay implementation. */}
+      <CleanCapture
+        frameOutput={frameOutput}
+        analysisOutput={faceOutput}
+        facing={cameraFacing}
+        enabled={cameraOn && !sharing && effectsReady}
+      />
+      <View style={styles.videoWrap}>
         {active ? (
           <RTCView
             key={`${orientation}-${sharing ? 'screen' : 'cam'}`}
@@ -425,20 +406,6 @@ const HostStage = ({
             <Text style={styles.camOffGlyph}>📷</Text>
             <Text style={styles.camOffText}>CAMERA OFF</Text>
           </View>
-        ) : null}
-        {/* CRT filter — host only, over the live camera (not a shared screen). */}
-        {host && crt && !sharing ? <CRTOverlay width={vwSize.width} height={vwSize.height} /> : null}
-        {/* Filter-grade cowl: filtered channels → registered transform (§6.8).
-            Only when the native publish compositor ISN'T doing it — the self-view
-            renders the publish stream, so with HAS_PUBLISH_COWL the cowl is already
-            baked into these pixels and drawing it again gives you two masks. */}
-        {trackFace && !HAS_PUBLISH_COWL ? (
-          <MaskOverlay
-            face={face}
-            wellW={vwSize.width}
-            wellH={vwSize.height}
-            front={front}
-          />
         ) : null}
         {sharing ? (
           <View style={styles.liveBadge}>

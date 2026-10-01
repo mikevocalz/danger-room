@@ -1,39 +1,50 @@
 /**
- * Fishjam 0.29.0 camera publish paths (per the Vision Camera + WebGPU-effects
- * tutorials).
+ * Danger Room camera publishing.
  *
- *  - Guests → `useVisionCameraSource` (package root): camera published as-is.
- *  - Host   → `useVisionCameraWebGpuSource` (`/webgpu`, iOS 17+): the feed runs
- *             through a WebGPU CRT filter before it leaves the device.
+ * Guests use Fishjam's copy-friendly VisionCamera source.
+ * The host uses Fishjam's official WebGPU VisionCamera source so the pixels
+ * published to WebRTC are also the source of truth for the self-view and XR.
  *
- * These are two separate hooks; the room renders a host component OR a guest
- * component (never both), so Rules-of-Hooks stay intact and only the host device
- * spins up a WebGPU pipeline. Both drive VisionCamera via the returned
- * `frameOutput` and expose a `stream` for the self-view (`RTCView`).
+ * One render() call may contain:
+ *   1. camera passthrough OR CRT pass
+ *   2. face-attached cowl blend pass
+ *
+ * Fishjam owns output surfaces, timestamps, encoder fencing and frame lifetime.
  */
-import { useCallback, useMemo } from 'react';
-import { scheduleOnRN } from 'react-native-worklets';
-import type { SharedValue } from 'react-native-reanimated';
-import { useFaceDetector } from 'react-native-vision-camera-face-detector';
-import { useVisionCameraSource } from '@fishjam-cloud/react-native-vision-camera-source';
+import 'react-native-webgpu';
 
-import { computeAnchor, NO_FACE, type FaceTickPayload } from './faceAnchor';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Image } from 'react-native';
+import type { SharedValue } from 'react-native-reanimated';
+import type { Frame } from 'react-native-vision-camera';
+import { GPUTextureUsage } from 'react-native-webgpu';
+import { useVisionCameraSource } from '@fishjam-cloud/react-native-vision-camera-source';
 import {
-  useVisionCameraWebGpuSource,
-  type WebGpuFrameRenderFunction,
-} from '@fishjam-cloud/react-native-vision-camera-source/webgpu';
-import {
-  useCameraWebGpuDevice,
+  computeAspectFillCrop,
   createCameraPassthroughPipeline,
   encodeCameraPassthrough,
-  computeAspectFillCrop,
   getOutputSurfaceFormat,
+  useCameraWebGpuDevice,
+  useVisionCameraWebGpuSource,
   type CameraPassthroughPipeline,
-} from '@fishjam-cloud/react-native-custom-video-source/webgpu';
+  type WebGpuFrameRenderFunction,
+} from '@fishjam-cloud/react-native-vision-camera-source/webgpu';
+
+import { COWL } from './cowlTemplate';
+import { coverScale, frameToView } from './frameToView';
+import type { FaceTickPayload } from './faceAnchor';
+import {
+  createCowlGpuEffect,
+  encodeCowlGpuEffect,
+  type CowlGpuEffect,
+} from './fishjamWebGpuEffects';
 
 export const SOURCE_ID = 'vision-camera';
 
-/** Old-TV look for the host: barrel curve, scanlines, chromatic fringe, vignette. */
+const DEFAULT_WIDTH = 720;
+const DEFAULT_HEIGHT = 1280;
+
+/** Old-TV treatment. This pass runs only while CRT is actually enabled. */
 export const CRT_WGSL = /* wgsl */ `
 struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 @group(0) @binding(0) var samp: sampler;
@@ -62,17 +73,17 @@ fn curve(uv: vec2f) -> vec2f {
     return vec4f(0.0, 0.0, 0.0, 1.0);
   }
   let dims = vec2f(textureDimensions(tex));
-  let ca = 1.3 / dims.x;                       // chromatic aberration
+  let ca = 1.3 / dims.x;
   var col = vec3f(
     textureSample(tex, samp, uv + vec2f(ca, 0.0)).r,
     textureSample(tex, samp, uv).g,
     textureSample(tex, samp, uv - vec2f(ca, 0.0)).b,
   );
-  let scan = 0.86 + 0.14 * sin(uv.y * dims.y * 3.14159);  // scanlines
+  let scan = 0.86 + 0.14 * sin(uv.y * dims.y * 3.14159);
   col = col * scan;
-  let v = uv * (1.0 - uv);                     // vignette
-  col = col * pow(v.x * v.y * 16.0, 0.22);
-  col = col * vec3f(1.06, 1.0, 1.06);          // cool phosphor tint
+  let v = uv * (1.0 - uv);
+  col = col * pow(max(v.x * v.y * 16.0, 0.0), 0.22);
+  col = col * vec3f(1.06, 1.0, 1.06);
   return vec4f(col, 1.0);
 }
 `;
@@ -80,28 +91,44 @@ fn curve(uv: vec2f) -> vec2f {
 interface CrtEffect {
   passthrough: CameraPassthroughPipeline;
   pipeline: GPURenderPipeline;
+  intermediate: GPUTexture;
   interView: GPUTextureView;
   bind: GPUBindGroup;
 }
 
-/** Build the passthrough + CRT post pipelines once the device is available. */
-function buildCrt(device: GPUDevice, width: number, height: number): CrtEffect {
+function buildCrt(
+  device: GPUDevice,
+  width: number,
+  height: number,
+): CrtEffect {
   const format = getOutputSurfaceFormat();
-  const passthrough = createCameraPassthroughPipeline(device, { mirror: true });
+  // Do not mirror the published camera. RTCView owns selfie mirroring locally.
+  const passthrough = createCameraPassthroughPipeline(device);
 
-  // Camera draws into this; the CRT pass then samples it into the output surface.
-  const inter = device.createTexture({
+  const intermediate = device.createTexture({
+    label: 'danger-room-crt-intermediate',
     size: [width, height],
     format,
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
   });
-  const interView = inter.createView();
-  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-  const module = device.createShaderModule({ code: CRT_WGSL });
+  const interView = intermediate.createView();
+  const sampler = device.createSampler({
+    magFilter: 'linear',
+    minFilter: 'linear',
+  });
+  const module = device.createShaderModule({
+    label: 'danger-room-crt',
+    code: CRT_WGSL,
+  });
   const pipeline = device.createRenderPipeline({
+    label: 'danger-room-crt',
     layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
-    fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+    fragment: {
+      module,
+      entryPoint: 'fs',
+      targets: [{ format }],
+    },
     primitive: { topology: 'triangle-list' },
   });
   const bind = device.createBindGroup({
@@ -111,139 +138,276 @@ function buildCrt(device: GPUDevice, width: number, height: number): CrtEffect {
       { binding: 1, resource: interView },
     ],
   });
-  return { passthrough, pipeline, interView, bind };
+  return { passthrough, pipeline, intermediate, interView, bind };
 }
 
 export interface CameraPublish {
-  /** Plug into VisionCamera: `useCamera({ device, isActive, outputs: [frameOutput] })`. */
   frameOutput: unknown;
-  /** Self-view stream for `<RTCView mediaStream={stream} />`; null until ready. */
   stream: import('@fishjam-cloud/react-native-webrtc').MediaStream | null;
   error: Error | null;
+  /** Safe to start the CameraSession. GPU uploads are complete. */
+  ready?: boolean;
+}
+
+interface HostEffectsOptions {
+  crtOn: SharedValue<boolean>;
+  maskOn: SharedValue<boolean>;
+  face: SharedValue<FaceTickPayload>;
+  width?: number;
+  height?: number;
+}
+
+interface PoseState {
+  initialized: boolean;
+  cx: number;
+  cy: number;
+  iod: number;
+  roll: number;
+}
+
+function approach(
+  current: number,
+  target: number,
+  response: number,
+  minAlpha: number,
+  maxAlpha: number,
+): number {
+  'worklet';
+  const delta = target - current;
+  const motion = Math.min(Math.abs(delta) / response, 1);
+  const alpha = minAlpha + motion * (maxAlpha - minAlpha);
+  return current + delta * alpha;
+}
+
+function approachAngle(current: number, target: number): number {
+  'worklet';
+  let delta = target - current;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  const motion = Math.min(Math.abs(delta) / 0.35, 1);
+  const alpha = 0.35 + motion * 0.5;
+  return current + delta * alpha;
 }
 
 /**
- * Host camera published through the CRT filter (iOS 17+). The device resolves
- * asynchronously; until then `onFrame` is a no-op and nothing is published.
+ * Official Fishjam VisionCamera + WebGPU publish path.
+ *
+ * The cowl texture is uploaded before the camera starts. During capture there
+ * are no JS-thread GPU uploads and no custom WebRTC compositor. Pose updates are
+ * a tiny uniform write from the frame worklet.
  */
-export function useHostCrtCameraSource(width = 720, height = 1280): CameraPublish {
-  const { device } = useCameraWebGpuDevice();
+export function useHostEffectsCameraSource({
+  crtOn,
+  maskOn,
+  face,
+  width = DEFAULT_WIDTH,
+  height = DEFAULT_HEIGHT,
+}: HostEffectsOptions): CameraPublish {
+  const { device, error: deviceError } = useCameraWebGpuDevice();
   const crt = useMemo(
     () => (device ? buildCrt(device, width, height) : null),
     [device, width, height],
   );
 
+  const [cowl, setCowl] = useState<CowlGpuEffect | null>(null);
+  const [assetSettled, setAssetSettled] = useState(false);
+  const [assetError, setAssetError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!device) {
+      setCowl(null);
+      setAssetSettled(false);
+      setAssetError(null);
+      return;
+    }
+
+    let live = true;
+    setAssetSettled(false);
+    setAssetError(null);
+
+    void (async () => {
+      const asset = Image.resolveAssetSource(
+        require('../../../assets/models/wolverine_cowl.png'),
+      );
+      const response = await fetch(asset.uri);
+      if (!response.ok) {
+        throw new Error(`Cowl asset request failed: HTTP ${response.status}`);
+      }
+      const bitmap = await createImageBitmap(await response.arrayBuffer());
+      const next = createCowlGpuEffect(device, bitmap, width, height);
+      bitmap.close?.();
+
+      if (!live) {
+        next.texture.destroy();
+        return;
+      }
+      setCowl(next);
+      setAssetSettled(true);
+    })().catch((cause) => {
+      if (!live) return;
+      setCowl(null);
+      setAssetSettled(true);
+      setAssetError(
+        cause instanceof Error ? cause : new Error(String(cause)),
+      );
+    });
+
+    return () => {
+      live = false;
+    };
+  }, [device, width, height]);
+
+  // This is deliberately mutable worklet-local state, the same pattern Fishjam
+  // uses for its pooled-surface cursor. It smooths sparse detector targets at
+  // the actual camera publish cadence without any JS/RN round-trip.
+  const poseState = useMemo<PoseState>(
+    () => ({
+      initialized: false,
+      cx: 0.5,
+      cy: 0.42,
+      iod: 0,
+      roll: 0,
+    }),
+    [device],
+  );
+
   const onFrame = useCallback(
-    (_frame: unknown, render: WebGpuFrameRenderFunction) => {
+    (_frame: Frame, render: WebGpuFrameRenderFunction) => {
       'worklet';
-      if (!crt || !device) return;
-      const { passthrough, pipeline, interView, bind } = crt;
+      if (!device || !crt) return;
+
       render((context) => {
-        // 1. live camera → intermediate texture (cropped to fill, like objectFit:cover)
         const crop = computeAspectFillCrop(
           context.cameraWidth,
           context.cameraHeight,
           context.outputWidth / context.outputHeight,
         );
-        encodeCameraPassthrough(
-          device,
-          passthrough,
-          context.cameraTexture,
-          interView,
-          context.commandEncoder,
-          crop,
+
+        if (crtOn.value) {
+          // CRT is opt-in, so the normal camera path remains one render pass.
+          encodeCameraPassthrough(
+            device,
+            crt.passthrough,
+            context.cameraTexture,
+            crt.interView,
+            context.commandEncoder,
+            crop,
+          );
+          const crtPass = context.commandEncoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: context.outputView,
+                loadOp: 'clear',
+                storeOp: 'store',
+                clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              },
+            ],
+          });
+          crtPass.setPipeline(crt.pipeline);
+          crtPass.setBindGroup(0, crt.bind);
+          crtPass.draw(3);
+          crtPass.end();
+        } else {
+          encodeCameraPassthrough(
+            device,
+            crt.passthrough,
+            context.cameraTexture,
+            context.outputView,
+            context.commandEncoder,
+            crop,
+          );
+        }
+
+        const target = face.value;
+        if (
+          !maskOn.value ||
+          !cowl ||
+          !target.present ||
+          target.iod <= 0.02
+        ) {
+          poseState.initialized = false;
+          return;
+        }
+
+        if (!poseState.initialized) {
+          poseState.cx = target.cx;
+          poseState.cy = target.cy;
+          poseState.iod = target.iod;
+          poseState.roll = target.roll;
+          poseState.initialized = true;
+        } else {
+          poseState.cx = approach(poseState.cx, target.cx, 0.07, 0.36, 0.86);
+          poseState.cy = approach(poseState.cy, target.cy, 0.07, 0.36, 0.86);
+          poseState.iod = approach(poseState.iod, target.iod, 0.04, 0.3, 0.76);
+          poseState.roll = approachAngle(poseState.roll, target.roll);
+        }
+
+        const cameraAspect = context.cameraWidth / context.cameraHeight;
+        const center = frameToView(
+          poseState.cx,
+          poseState.cy,
+          cameraAspect,
+          context.outputWidth,
+          context.outputHeight,
+          context.cameraIsMirrored,
         );
-        // 2. CRT post-pass: intermediate → published output surface
-        const pass = context.commandEncoder.beginRenderPass({
-          colorAttachments: [
-            { view: context.outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } },
-          ],
-        });
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, bind);
-        pass.draw(3);
-        pass.end();
+        const viewIod =
+          poseState.iod *
+          coverScale(
+            cameraAspect,
+            context.outputWidth,
+            context.outputHeight,
+          );
+
+        encodeCowlGpuEffect(
+          device,
+          cowl,
+          {
+            centerX: center.x,
+            centerY: center.y,
+            scale: viewIod / COWL.iod,
+            roll: context.cameraIsMirrored
+              ? -poseState.roll
+              : poseState.roll,
+          },
+          context.outputView,
+          context.commandEncoder,
+        );
       });
     },
-    [crt, device],
+    [device, crt, cowl, crtOn, maskOn, face, poseState],
   );
 
-  const { frameOutput, stream, error } = useVisionCameraWebGpuSource(SOURCE_ID, {
-    width,
-    height,
-    device: device ?? undefined,
-    onFrame,
-  });
-  return { frameOutput, stream, error };
+  const gpuReady = Boolean(device && crt && assetSettled);
+  const { frameOutput, stream, error } = useVisionCameraWebGpuSource(
+    SOURCE_ID,
+    {
+      enabled: gpuReady,
+      width,
+      height,
+      poolSize: 3,
+      device: device ?? undefined,
+      onFrame,
+    },
+  );
+
+  return {
+    frameOutput,
+    stream,
+    ready: gpuReady,
+    error: error ?? deviceError ?? assetError,
+  };
 }
 
-/** Guest camera published as-is (all platforms).
- *  `pixelFormat: 'yuv'` — the Surface Duo (and some devices) reject the default
- *  native/PRIVATE format at 720p for the ImageAnalysis frame path; YUV_420_888
- *  is universally supported and is the format WebRTC encodes anyway. */
+/**
+ * Guest camera publishes without effects. YUV stays explicit because this app
+ * supports foldables whose CameraX PRIVATE/native analysis combinations have
+ * been unreliable; the host WebGPU path always uses Fishjam's required native
+ * zero-copy format internally.
+ */
 export function useGuestCameraSource(): CameraPublish {
   const { frameOutput, stream, error } = useVisionCameraSource(SOURCE_ID, {
     pixelFormat: 'yuv',
   });
-  return { frameOutput, stream, error };
-}
-
-/**
- * Host camera with FRAME-SYNC face tracking (the FaceBlurApp pattern mapped to
- * the fishjam publish path): MLKit `detectFaces(frame)` runs SYNCHRONOUSLY in
- * the publish source's `onFrame` worklet — on the very frames being published —
- * instead of a second detector CameraOutput with its own buffer stream.
- *
- * What this buys over the old MaskedCapture/CleanCapture seam:
- *  - one camera output instead of two (publish + detector) — less camera load;
- *  - detection is measured on the published frame, so the compositor's face
- *    state trails by one scheduleOnRN hop (~a frame) instead of a whole
- *    independent pipeline's latency — the cowl stops trailing the face;
- *  - the MASK toggle is just the `maskOn` shared value — fishjam wires onFrame
- *    through setOnFrameCallback, so toggling NEVER reconfigures the camera
- *    session. The keyed-remount seam (§3.1/§6.2) is dead.
- *
- * Contours: runContours gives the FACE oval, whose width along the eye line is
- * yaw-stable (raw IOD shrinks as the head turns — the old "mask doesn't fit").
- * MLKit limits contours to ONE face, which is exactly the host.
- */
-export function useTrackedGuestCameraSource(
-  maskOn: SharedValue<boolean>,
-  onFaceTick: (t: FaceTickPayload) => void,
-  facing: 'front' | 'back' = 'front',
-): CameraPublish {
-  // Stable options object — useFaceDetector memoizes on the OBJECT (same
-  // rest-object pitfall as the patched useFaceDetectorOutput), so an inline
-  // literal would rebuild the native detector every render.
-  const detectorOptions = useMemo(
-    () => ({
-      performanceMode: 'fast' as const,
-      cameraFacing: facing,
-      runLandmarks: true,
-      runContours: true,
-      // NOT trackingEnabled: MLKit disables tracking when contours are on.
-      minFaceSize: 0.2,
-    }),
-    [facing],
-  );
-  const detector = useFaceDetector(detectorOptions);
-
-  const onFrame = useCallback(
-    (frame: unknown) => {
-      'worklet';
-      if (!maskOn.value) return;
-      // ponytail: detect on EVERY published frame ('fast' ≈ 12ms on-device).
-      // If thermals/fps suffer, detect every 2nd frame here and let the
-      // compositor hold the last pose — the knob is a modulo, not a redesign.
-      const faces = detector.detectFaces(frame as never);
-      scheduleOnRN(onFaceTick, faces.length ? computeAnchor(faces[0]) : NO_FACE);
-    },
-    [detector, maskOn, onFaceTick],
-  );
-
-  const { frameOutput, stream, error } = useVisionCameraSource(SOURCE_ID, {
-    pixelFormat: 'yuv',
-    onFrame,
-  });
-  return { frameOutput, stream, error };
+  return { frameOutput, stream, error, ready: true };
 }

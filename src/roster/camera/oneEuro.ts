@@ -63,6 +63,9 @@ export class OneEuro {
   }
 }
 
-// Defaults per §6.7. Position channels smooth harder; angle channels track tighter.
-export const POS_PARAMS: OneEuroParams = { minCutoff: 1.2, beta: 0.03, dCutoff: 1.0 };
-export const ANGLE_PARAMS: OneEuroParams = { minCutoff: 2.0, beta: 0.15, dCutoff: 1.0 };
+// Detector-domain filtering only. These are intentionally more responsive than
+// the old values because the UI thread now performs a second, display-rate
+// interpolation stage. Heavy filtering here would create visible head-lag.
+export const POS_PARAMS: OneEuroParams = { minCutoff: 2.4, beta: 0.12, dCutoff: 1.0 };
+export const SCALE_PARAMS: OneEuroParams = { minCutoff: 2.0, beta: 0.09, dCutoff: 1.0 };
+export const ANGLE_PARAMS: OneEuroParams = { minCutoff: 3.2, beta: 0.25, dCutoff: 1.0 };
