@@ -1,1 +1,1 @@
-export { useReservedRegions, type ReservedRegion } from './reserved-regions.web';\n
+export { useReservedRegions, type ReservedRegion } from './reserved-regions.web';
