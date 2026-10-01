@@ -33,7 +33,8 @@ import type { ReactionKind } from '@/stores/reactionStore';
 import { CleanCapture } from '@/roster/camera/CleanCapture';
 import { useMaskFilters, type FilteredFace } from '@/roster/camera/useMaskFilters';
 import type { FaceTickPayload } from '@/roster/camera/faceAnchor';
-import { useGuestCameraSource, useTrackedGuestCameraSource } from '@/roster/camera/usePublishSource';
+import { useGuestCameraSource } from '@/roster/camera/usePublishSource';
+import { useFaceFilterOutput } from '@/roster/camera/useFaceFilterOutput';
 import {
   enablePublishCowl, disablePublishCowl, pushCowlFace, HAS_PUBLISH_COWL,
 } from '@/roster/camera/publishCowl';
@@ -309,11 +310,9 @@ const HostStage = ({
   const sharing = !!screenTrack;
   const mask = useFilterStore((s) => s.mask);
   const trackFace = host && mask && !sharing;
-  // Frame-sync tracking (FaceBlurApp pattern): detection runs in the publish
-  // source's onFrame worklet, gated by this shared value — so the MASK toggle
-  // never touches the camera session and the old remount seam (§3.1/§6.2,
-  // MaskedCapture/CleanCapture) is gone. §9 still holds: the publish source is
-  // owned HERE and never remounts.
+  // The detector runs on its own low-resolution YUV output. Fishjam publishing
+  // never waits for ML Kit, and this shared gate turns inference off without
+  // changing the CameraSession outputs.
   const trackFaceSV = useSharedValue(false);
   useEffect(() => { trackFaceSV.value = trackFace; }, [trackFace, trackFaceSV]);
 
@@ -327,10 +326,8 @@ const HostStage = ({
     }
   }, [trackFace]);
 
-  // §6.1 — filtered tracking channels; MaskOverlay derives the transform.
-  // ponytail: ONE shared value, not seven. Seven `withTiming` writes per detector
-  // tick was ~182 JS→UI animation starts/sec and was a main source of the lag;
-  // this is one plain write per tick. One Euro (below) already does the smoothing.
+  // Detector-domain filtering removes ML jitter. MaskOverlay then performs the
+  // separate display-rate interpolation stage on the UI thread.
   const face = useSharedValue<FilteredFace>({
     present: false, cx: 0.5, cy: 0.42, iod: 0, aspect: 1, roll: 0, yaw: 0, pitch: 0,
   });
@@ -360,8 +357,8 @@ const HostStage = ({
   );
 
   const cameraFacing = useFilterStore((s) => s.cameraFacing);
-  // Publish source + frame-sync detection in ONE camera output.
-  const { frameOutput, stream } = useTrackedGuestCameraSource(trackFaceSV, onFaceTick, cameraFacing);
+  const { frameOutput, stream } = useGuestCameraSource();
+  const faceOutput = useFaceFilterOutput(trackFaceSV, onFaceTick, cameraFacing);
 
   const toggleShare = async () => {
     try {
@@ -403,10 +400,15 @@ const HostStage = ({
   const front = cameraFacing === 'front';
   return (
     <View style={styles.stage}>
-      {/* ONE stable capture driver. Detection lives in the publish worklet
-          (useTrackedGuestCameraSource), so there is no mask-keyed remount —
-          only a lens flip recreates the session (facing key inside). */}
-      <CleanCapture frameOutput={frameOutput} facing={cameraFacing} enabled={cameraOn} />
+      {/* One CameraSession, two stable outputs: full-quality publish + low-res
+          face analysis. Filter toggles only gate inference; they never rebuild
+          the camera graph. */}
+      <CleanCapture
+        frameOutput={frameOutput}
+        analysisOutput={faceOutput}
+        facing={cameraFacing}
+        enabled={cameraOn}
+      />
       <View style={styles.videoWrap} onLayout={(e) => setVwSize(e.nativeEvent.layout)}>
         {active ? (
           <RTCView
