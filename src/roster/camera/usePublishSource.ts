@@ -1,5 +1,5 @@
 /**
- * Fishjam 0.29.0 camera publish paths (per the Vision Camera + WebGPU-effects
+ * Fishjam 0.30.2 camera publish paths (per the Vision Camera + WebGPU-effects
  * tutorials).
  *
  *  - Guests → `useVisionCameraSource` (package root): camera published as-is.
