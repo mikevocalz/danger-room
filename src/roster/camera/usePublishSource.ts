@@ -1,5 +1,5 @@
 /**
- * Fishjam 0.29.0 camera publish paths (per the Vision Camera + WebGPU-effects
+ * Fishjam camera publish paths (per the Vision Camera + WebGPU-effects
  * tutorials).
  *
  *  - Guests → `useVisionCameraSource` (package root): camera published as-is.
@@ -12,12 +12,8 @@
  * `frameOutput` and expose a `stream` for the self-view (`RTCView`).
  */
 import { useCallback, useMemo } from 'react';
-import { scheduleOnRN } from 'react-native-worklets';
-import type { SharedValue } from 'react-native-reanimated';
-import { useFaceDetector } from 'react-native-vision-camera-face-detector';
 import { useVisionCameraSource } from '@fishjam-cloud/react-native-vision-camera-source';
 
-import { computeAnchor, NO_FACE, type FaceTickPayload } from './faceAnchor';
 import {
   useVisionCameraWebGpuSource,
   type WebGpuFrameRenderFunction,
@@ -184,66 +180,6 @@ export function useHostCrtCameraSource(width = 720, height = 1280): CameraPublis
 export function useGuestCameraSource(): CameraPublish {
   const { frameOutput, stream, error } = useVisionCameraSource(SOURCE_ID, {
     pixelFormat: 'yuv',
-  });
-  return { frameOutput, stream, error };
-}
-
-/**
- * Host camera with FRAME-SYNC face tracking (the FaceBlurApp pattern mapped to
- * the fishjam publish path): MLKit `detectFaces(frame)` runs SYNCHRONOUSLY in
- * the publish source's `onFrame` worklet — on the very frames being published —
- * instead of a second detector CameraOutput with its own buffer stream.
- *
- * What this buys over the old MaskedCapture/CleanCapture seam:
- *  - one camera output instead of two (publish + detector) — less camera load;
- *  - detection is measured on the published frame, so the compositor's face
- *    state trails by one scheduleOnRN hop (~a frame) instead of a whole
- *    independent pipeline's latency — the cowl stops trailing the face;
- *  - the MASK toggle is just the `maskOn` shared value — fishjam wires onFrame
- *    through setOnFrameCallback, so toggling NEVER reconfigures the camera
- *    session. The keyed-remount seam (§3.1/§6.2) is dead.
- *
- * Contours: runContours gives the FACE oval, whose width along the eye line is
- * yaw-stable (raw IOD shrinks as the head turns — the old "mask doesn't fit").
- * MLKit limits contours to ONE face, which is exactly the host.
- */
-export function useTrackedGuestCameraSource(
-  maskOn: SharedValue<boolean>,
-  onFaceTick: (t: FaceTickPayload) => void,
-  facing: 'front' | 'back' = 'front',
-): CameraPublish {
-  // Stable options object — useFaceDetector memoizes on the OBJECT (same
-  // rest-object pitfall as the patched useFaceDetectorOutput), so an inline
-  // literal would rebuild the native detector every render.
-  const detectorOptions = useMemo(
-    () => ({
-      performanceMode: 'fast' as const,
-      cameraFacing: facing,
-      runLandmarks: true,
-      runContours: true,
-      // NOT trackingEnabled: MLKit disables tracking when contours are on.
-      minFaceSize: 0.2,
-    }),
-    [facing],
-  );
-  const detector = useFaceDetector(detectorOptions);
-
-  const onFrame = useCallback(
-    (frame: unknown) => {
-      'worklet';
-      if (!maskOn.value) return;
-      // ponytail: detect on EVERY published frame ('fast' ≈ 12ms on-device).
-      // If thermals/fps suffer, detect every 2nd frame here and let the
-      // compositor hold the last pose — the knob is a modulo, not a redesign.
-      const faces = detector.detectFaces(frame as never);
-      scheduleOnRN(onFaceTick, faces.length ? computeAnchor(faces[0]) : NO_FACE);
-    },
-    [detector, maskOn, onFaceTick],
-  );
-
-  const { frameOutput, stream, error } = useVisionCameraSource(SOURCE_ID, {
-    pixelFormat: 'yuv',
-    onFrame,
   });
   return { frameOutput, stream, error };
 }
