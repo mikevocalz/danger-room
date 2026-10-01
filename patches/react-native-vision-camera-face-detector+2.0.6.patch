@@ -1,0 +1,53 @@
+diff --git a/node_modules/react-native-vision-camera-face-detector/lib/commonjs/hooks/useFaceDetectorOutput.js b/node_modules/react-native-vision-camera-face-detector/lib/commonjs/hooks/useFaceDetectorOutput.js
+index 89faa19..1ee91c1 100644
+--- a/node_modules/react-native-vision-camera-face-detector/lib/commonjs/hooks/useFaceDetectorOutput.js
++++ b/node_modules/react-native-vision-camera-face-detector/lib/commonjs/hooks/useFaceDetectorOutput.js
+@@ -77,7 +77,11 @@ function useFaceDetectorOutput({
+     },
+     outputResolution: outputResolution,
+     ...options
+-  }), [options]);
++    // patched: memoize on option CONTENTS — `options` is a fresh rest object
++    // every render, so `[options]` never memoizes and the CameraSession is
++    // reconfigured on every render (flapping track + dead detector).
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }), [JSON.stringify(options), outputResolution]);
+ }
+ var _default = exports.default = useFaceDetectorOutput;
+ //# sourceMappingURL=useFaceDetectorOutput.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-vision-camera-face-detector/lib/module/hooks/useFaceDetectorOutput.js b/node_modules/react-native-vision-camera-face-detector/lib/module/hooks/useFaceDetectorOutput.js
+index b632498..80c4907 100644
+--- a/node_modules/react-native-vision-camera-face-detector/lib/module/hooks/useFaceDetectorOutput.js
++++ b/node_modules/react-native-vision-camera-face-detector/lib/module/hooks/useFaceDetectorOutput.js
+@@ -73,7 +73,11 @@ export function useFaceDetectorOutput({
+     },
+     outputResolution: outputResolution,
+     ...options
+-  }), [options]);
++    // patched: memoize on option CONTENTS — `options` is a fresh rest object
++    // every render, so `[options]` never memoizes and the CameraSession is
++    // reconfigured on every render (flapping track + dead detector).
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }), [JSON.stringify(options), outputResolution]);
+ }
+ export default useFaceDetectorOutput;
+ //# sourceMappingURL=useFaceDetectorOutput.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-vision-camera-face-detector/src/hooks/useFaceDetectorOutput.ts b/node_modules/react-native-vision-camera-face-detector/src/hooks/useFaceDetectorOutput.ts
+index 3ae1a88..3066c8a 100644
+--- a/node_modules/react-native-vision-camera-face-detector/src/hooks/useFaceDetectorOutput.ts
++++ b/node_modules/react-native-vision-camera-face-detector/src/hooks/useFaceDetectorOutput.ts
+@@ -84,7 +84,11 @@ export function useFaceDetectorOutput( {
+       outputResolution: outputResolution,
+       ...options
+     } ),
+-    [ options ]
++    // patched: `options` is a fresh rest object every render, so memoizing on its
++    // identity never hits — a new CameraOutput each render makes useCameraController
++    // reconfigure the CameraSession continuously. Key on contents instead.
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++    [ JSON.stringify( options ), outputResolution ]
+   )
+ }
+ 

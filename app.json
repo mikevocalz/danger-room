@@ -1,0 +1,101 @@
+{
+  "expo": {
+    "name": "danger-room",
+    "slug": "danger-room",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "dangerroom",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/expo.icon",
+      "deploymentTarget": "17.0",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Danger Room uses your camera to publish your seat's live video to the room.",
+        "NSMicrophoneUsageDescription": "Danger Room uses your microphone to publish your audio to the room."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
+      "package": "com.dvntproject2.dangerroom"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-dev-client",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#208AEF",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 76
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          },
+          "ios": {
+            "deploymentTarget": "17.0"
+          }
+        }
+      ],
+      "react-native-audio-api",
+      [
+        "@fishjam-cloud/react-native-client",
+        {
+          "android": {
+            "enableForegroundService": true,
+            "enableScreensharing": true
+          },
+          "ios": {
+            "enableScreensharing": true
+          }
+        }
+      ],
+      [
+        "@reactvision/react-viro",
+        {
+          "android": {
+            "xRMode": [
+              "QUEST"
+            ]
+          }
+        }
+      ],
+      [
+        "expo-horizon-core",
+        {
+          "horizonAppId": "0000000000000000",
+          "defaultWidth": "1024dp",
+          "defaultHeight": "640dp",
+          "supportedDevices": "quest2|quest3|quest3s",
+          "disableVrHeadtracking": false,
+          "allowBackup": false
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
