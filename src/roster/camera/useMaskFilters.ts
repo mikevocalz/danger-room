@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { OneEuro, POS_PARAMS, ANGLE_PARAMS } from './oneEuro';
+import { OneEuro, POS_PARAMS, SCALE_PARAMS, ANGLE_PARAMS } from './oneEuro';
 import type { FaceTickPayload } from './faceAnchor';
 
 export interface FilteredFace {
@@ -19,7 +19,7 @@ export function useMaskFilters() {
   return useMemo(() => {
     const fCx = new OneEuro(POS_PARAMS);
     const fCy = new OneEuro(POS_PARAMS);
-    const fIod = new OneEuro(POS_PARAMS);
+    const fIod = new OneEuro(SCALE_PARAMS);
     const fRoll = new OneEuro(ANGLE_PARAMS);
     const fYaw = new OneEuro(ANGLE_PARAMS);
     const fPitch = new OneEuro(ANGLE_PARAMS);
