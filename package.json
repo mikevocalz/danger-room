@@ -28,7 +28,7 @@
     "expo-symbols": "~58.0.3",
     "expo-system-ui": "~58.0.4",
     "expo-web-browser": "~58.0.3",
-    "nitro-canvas-in-Vision": "git+ssh://git@github.com/mikevocalz/nitro-canvas-in-Vision.git#20622edce8c1779bc09e0b8b0a8edfc2a446bcec",
+    "nitro-canvas-in-Vision": "git+ssh://git@github.com/mikevocalz/nitro-canvas-in-Vision.git#5f95756618ce2ab2b6dd49dc5694e767602415b7",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-native": "0.88.0-rc.3",
