@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import { Stack } from 'expo-router';
+import { DarkTheme, DefaultTheme, Slot, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
 import { FishjamProvider } from '@fishjam-cloud/react-native-client';
@@ -32,11 +31,8 @@ export default function RootLayout() {
       <FishjamProvider fishjamId={FISHJAM_ID}>
         <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
           <BottomSheetModalProvider>
-            {/* index = lobby (host starts / guests join) → room. */}
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="room" options={{ animation: 'fade' }} />
-            </Stack>
+            {/* Slot is intentional: native SplitView cannot live under Stack. */}
+            <Slot />
             {/* Cerebro splash + theme, above everything until it clears. */}
             {!splashDone ? <DangerRoomSplash onDone={markSplashDone} /> : null}
           </BottomSheetModalProvider>

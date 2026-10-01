@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Slot, useLocalSearchParams, useRouter } from 'expo-router';
+import { SplitView } from 'expo-router/unstable-split-view';
 import { useFont, type SkFont } from '@shopify/react-native-skia';
 import {
   usePeers,
@@ -20,6 +21,7 @@ import BottomSheet, { BottomSheetView, type BottomSheetModal } from '@gorhom/bot
 import { isHorizonDevice } from '@/horizon';
 import { HostPlate } from '@/roster/HostPlate';
 import { RoomLayout } from '@/roster/layout/RoomLayout';
+import { GuestColumnsProvider, RoomGuestProvider } from '@/room/RoomPaneContext';
 import { RosterGrid } from '@/roster/RosterGrid';
 import { DnaShowcase } from '@/roster/showcase/DnaShowcase';
 import { makeCircledX } from '@/roster/glyphs';
@@ -81,7 +83,7 @@ const GUEST_SEATS = [
  * The room. Host stage (video 80% + controls 20%) + auto-cycling DNA showcase,
  * with the live guest band. Peers come from Fishjam; the host takes the stage.
  */
-export default function Room() {
+export default function RoomLayoutRoute() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const orientation = width > height ? 'land' : 'port';
@@ -164,105 +166,41 @@ export default function Room() {
     }
   });
 
-  return (
-    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom + 8 }]}>
-      {/* Real room — ALWAYS rendering (opacity 1) but hidden UNDER the opaque
-          skeleton, so every Skia plate + the WebGPU showcase fully draw while
-          covered. Nothing trickles: the skeleton just lifts off once all ready.
-          Unmounted on `leaving` so the native views tear down before we exit. */}
-      {!leaving ? (
-      <View style={styles.detail}>
-        <RoomLayout
-          host={
-            <MeasuredHost
-              name={hostName}
-              font={plateFont ?? undefined}
-              video={
-                iAmHost ? (
-                  <HostStage
-                    orientation={orientation}
-                    host
-                    onLeave={leave}
-                    onChat={() => chatRef.current?.present()}
-                    onReact={react}
-                  />
-                ) : (
-                  // Guest: the top panel shows the HOST's remote feed (screen
-                  // share if they're sharing, else their camera) — not your own
-                  // self-view. Your camera still publishes for your grid seat.
-                  <ViewerStage
-                    hostStream={host?.screenStream ?? host?.stream ?? null}
-                    sharing={!!host?.screenStream}
-                    onLeave={leave}
-                    onChat={() => chatRef.current?.present()}
-                    onReact={react}
-                  />
-                )
-              }
-              onLeave={leave}
-              onChat={() => chatRef.current?.present()}
-            />
-          }
-          showcase={
-            <ShowcaseCard
-              name={CHARACTERS[modelIndex]}
-              description={DESCRIPTIONS[CHARACTERS[modelIndex]]}
-              compact={orientation === 'port'}
-            >
-              <DnaShowcase
-                key={orientation}
-                character={CHARACTERS[modelIndex]}
-                onModelReady={setReady}
-              />
-            </ShowcaseCard>
-          }
-          guests={(columns) => (
-            <RosterGrid
-              peers={Array.from({ length: GUEST_SLOTS }, (_, i) => {
-                const g = guests[i];
-                return {
-                  id: g?.id ?? `seat${i}`,
-                  name: g?.name ?? GUEST_SEATS[i],
-                  state: g ? ('occupied' as const) : ('empty' as const),
-                  isSelf: g?.self,
-                  // Live guest camera in the plate; empty seats stay faceplates.
-                  videoSlot: g?.stream ? (
-                    <RTCView
-                      mediaStream={g.stream}
-                      style={StyleSheet.absoluteFill}
-                      objectFit="cover"
-                      mirror={!!g.self}
-                    />
-                  ) : undefined,
-                };
-              })}
-              columns={columns}
-              rows={GUEST_SLOTS / columns}
-              slots={GUEST_SLOTS}
-              glyph={mark}
-              font={plateFont ?? undefined}
-            />
-          )}
-        />
-      </View>
-      ) : null}
+  const hostPane = <MeasuredHost name={hostName} font={plateFont ?? undefined}
+    video={iAmHost ? <HostStage orientation={orientation} host onLeave={leave} onChat={() => chatRef.current?.present()} onReact={react} />
+      : <ViewerStage hostStream={host?.screenStream ?? host?.stream ?? null} sharing={!!host?.screenStream}
+          onLeave={leave} onChat={() => chatRef.current?.present()} onReact={react} />}
+    onLeave={leave} onChat={() => chatRef.current?.present()} />;
 
-      {/* One skeleton for the whole room; crossfades out in a single beat.
-          Stays up while leaving so the exit isn't a flash of empty cobalt. */}
-      <Motion.View
-        style={[styles.overlay, { paddingTop: insets.top, paddingBottom: insets.bottom + 8 }]}
-        pointerEvents={ready && !leaving ? 'none' : 'auto'}
-        animate={{ opacity: ready && !leaving ? 0 : 1 }}
-        transition={{ type: 'timing', duration: 400 }}
-      >
-        <View style={styles.detail}>
-          <RoomSkeleton />
-        </View>
+  const showcasePane = <ShowcaseCard name={CHARACTERS[modelIndex]} description={DESCRIPTIONS[CHARACTERS[modelIndex]]} compact={orientation === 'port'}>
+    <DnaShowcase key={orientation} character={CHARACTERS[modelIndex]} onModelReady={setReady} />
+  </ShowcaseCard>;
+
+  const renderGuests = (columns: number) => <RosterGrid peers={Array.from({ length: GUEST_SLOTS }, (_, i) => {
+    const g=guests[i]; return { id:g?.id ?? `seat${i}`, name:g?.name ?? GUEST_SEATS[i],
+      state:g ? ('occupied' as const) : ('empty' as const), isSelf:g?.self,
+      videoSlot:g?.stream ? <RTCView mediaStream={g.stream} style={StyleSheet.absoluteFill} objectFit="cover" mirror={!!g.self} /> : undefined };
+  })} columns={columns} rows={GUEST_SLOTS/columns} slots={GUEST_SLOTS} glyph={mark} font={plateFont ?? undefined} />;
+
+  return <RoomGuestProvider renderGuests={renderGuests}>
+    <View style={[styles.root,{paddingTop:insets.top,paddingBottom:insets.bottom+8}]}>
+      {!leaving ? <View style={styles.detail}>
+        {Platform.OS === 'ios'
+          ? <GuestColumnsProvider columns={2}><SplitView topColumnForCollapsing="primary" activityEnabled>
+              <SplitView.Column><View style={styles.fill}>{hostPane}</View></SplitView.Column>
+              <SplitView.Column><View style={styles.fill}>{showcasePane}</View></SplitView.Column>
+            </SplitView></GuestColumnsProvider>
+          : <RoomLayout host={hostPane} showcase={showcasePane}
+              guests={(columns)=><GuestColumnsProvider columns={columns}><Slot /></GuestColumnsProvider>} />}
+      </View> : null}
+      <Motion.View style={[styles.overlay,{paddingTop:insets.top,paddingBottom:insets.bottom+8}]}
+        pointerEvents={ready&&!leaving?'none':'auto'} animate={{opacity:ready&&!leaving?0:1}}
+        transition={{type:'timing',duration:400}}>
+        <View style={styles.detail}><RoomSkeleton /></View>
       </Motion.View>
-
       <ChatSheet ref={chatRef} username={myName} />
     </View>
-  );
+  </RoomGuestProvider>;
 }
 
 const MeasuredHost = ({

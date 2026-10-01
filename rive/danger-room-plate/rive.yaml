@@ -1,0 +1,5 @@
+name: danger_room_plate
+main: DangerRoomPlate
+logs:
+  file: build/rive.log
+  problems: build/problems.log

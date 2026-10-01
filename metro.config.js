@@ -5,7 +5,7 @@ const { getDefaultConfig } = require('expo/metro-config');
 const config = getDefaultConfig(__dirname);
 
 // Bundle 3D model assets (the showcase GLBs).
-config.resolver.assetExts.push('glb','gltf','bin','obj','mtl','fbx','hdr','exr','ktx','ktx2','vrx','arobject');
+config.resolver.assetExts.push('glb','gltf','bin','obj','mtl','fbx','hdr','exr','ktx','ktx2','vrx','arobject','riv');
 
 // react-native-wgpu: `three` does not resolve to its WebGPU build on RN by
 // default. The roster imports `three/webgpu` explicitly, but transitive deps
@@ -14,6 +14,9 @@ const upstreamResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName === 'three') {
     return context.resolveRequest(context, 'three/webgpu', platform);
+  }
+  if (moduleName === 'react-native/Libraries/Image/AssetRegistry') {
+    return context.resolveRequest(context, 'react-native/asset-registry', platform);
   }
   return (upstreamResolveRequest ?? context.resolveRequest)(
     context,

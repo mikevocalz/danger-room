@@ -1,0 +1,43 @@
+name: SDK 58 SplitView Rive migration
+on:
+  push:
+    branches: [feat/sdk58-splitview-rive-plates]
+  pull_request:
+    branches: [main]
+permissions: { contents: write }
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rive CLI
+        run: |
+          curl -fsSL https://releases.rive.app/cli/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.rive/bin" >> "$GITHUB_PATH"
+      - name: Build authored plate
+        run: |
+          RIVE_BIN="$(command -v rive || find "$HOME" -type f -name rive -perm -111 -print -quit)"
+          "$RIVE_BIN" rive/danger-room-plate --verify
+          "$RIVE_BIN" rive/danger-room-plate --once
+          mkdir -p assets/rive
+          cp rive/danger-room-plate/build/danger_room_plate.riv assets/rive/danger_room_plate.riv
+      - uses: actions/setup-node@v4
+        with: { node-version: 22.14.0 }
+      - name: Static SDK 58 graph
+        run: |
+          cp package.json /tmp/private-package.json
+          node -e "const fs=require('fs'),p=require('./package.json');p.dependencies['@reactvision/react-viro']='3.0.1';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          rm -f package-lock.json
+          npm install --ignore-scripts --no-package-lock
+          cp /tmp/private-package.json package.json
+          npx tsc --noEmit
+          npx expo prebuild --platform android --no-install --clean
+      - name: Commit compiled Rive
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/rive/danger_room_plate.riv
+          if ! git diff --cached --quiet; then git commit -m "build(rive): compile danger room plate [skip ci]" && git push; fi

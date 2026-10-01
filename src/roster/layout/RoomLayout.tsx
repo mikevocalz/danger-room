@@ -1,93 +1,65 @@
-import React, { type ReactNode } from 'react';
-import { StyleSheet, View, useWindowDimensions } from 'react-native';
+import React, { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { I18nManager, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
+import { foldLayoutsFromRegions, foldsInsideRow } from '@/adaptive/fold-layout';
+import { useReservedRegions } from '@/adaptive/reserved-regions';
 
-/** Center gutter that clears the Surface Duo hinge between the two screens.
- * Hand-tuned (Expo has no fold API): too small → a pane bleeds across the hinge,
- * too large → dead space on the near screen. */
-const HINGE = 28;
+export interface RoomLayoutProps { host: ReactNode; showcase: ReactNode; guests: (columns: number) => ReactNode }
+type RowFrame = { x: number; y: number; width: number; height: number };
 
-export interface RoomLayoutProps {
-  /** The host feed panel (HostPlate). */
-  host: ReactNode;
-  /** The DNA showcase panel. */
-  showcase: ReactNode;
-  /**
-   * The guest band. Receives the column count best suited to the current
-   * orientation: 4 columns in portrait (4 over 4), 2 in landscape (2 x 4).
-   */
-  guests: (columns: number) => ReactNode;
-  /** Host share of the host+showcase pairing (host and showcase split 50/50). */
-  hostRatio?: number;
-}
+export const RoomLayout = ({ host, showcase, guests }: RoomLayoutProps) => {
+  const rowRef = useRef<View>(null);
+  const regions = useReservedRegions();
+  const window = useWindowDimensions();
+  const [row, setRow] = useState<RowFrame | null>(null);
+  const measure = useCallback((_e?: LayoutChangeEvent) => requestAnimationFrame(() => {
+    rowRef.current?.measureInWindow((x,y,width,height) => setRow((old) =>
+      old && old.x === x && old.y === y && old.width === width && old.height === height
+        ? old : { x,y,width,height }));
+  }), []);
+  const folds = useMemo(() => row
+    ? foldsInsideRow(foldLayoutsFromRegions(regions, row.x, row.y), row.width, row.height)
+    : [], [regions,row]);
+  const vertical = folds.filter((f) => f.separating && f.orientation === 'vertical').sort((a,b) => a.x-b.x);
+  const horizontal = folds.filter((f) => f.separating && f.orientation === 'horizontal').sort((a,b) => a.y-b.y);
+  const rtl = I18nManager.isRTL;
+  const w = row?.width ?? window.width;
+  const h = row?.height ?? window.height;
+  let content: ReactNode;
 
-/**
- * The rotation contract:
- *
- * PORTRAIT                       LANDSCAPE
- * ┌────────────┬───────┐        ┌──────────┬────────────┐
- * │  host 60%  │ show  │  50%   │ host 60% │            │
- * ├────────────┴───────┤        ├──────────┤  guests    │
- * │      guests        │  50%   │ show 40% │  2 x 4     │
- * │      4 x 2         │        │          │            │
- * └────────────────────┘        └──────────┴────────────┘
- *
- * Landscape's left half becomes portrait's top half; the 60/40 host/showcase
- * split rides along, flipping its axis (stacked in landscape, side-by-side in
- * portrait) so the host feed always gets the wider aspect.
- */
-export const RoomLayout = ({
-  host,
-  showcase,
-  guests,
-  hostRatio = 0.5,
-}: RoomLayoutProps) => {
-  const { width, height } = useWindowDimensions();
-  const portrait = height >= width;
-
-  // Landscape (current book posture) splits host/showcase 50/50; portrait 60/40.
-  const ratio = portrait ? 0.6 : 0.5;
-  const showcaseRatio = 1 - ratio;
-  hostRatio = ratio;
-
-  if (portrait) {
-    return (
-      <View style={styles.fill}>
-        <View style={[styles.half, styles.row]}>
-          <View style={{ flex: hostRatio }}>{host}</View>
-          <View style={{ flex: showcaseRatio }}>{showcase}</View>
-        </View>
-        <View style={styles.half}>{guests(4)}</View>
-      </View>
-    );
+  if (vertical.length >= 2 && row) {
+    const a=vertical[0]!, b=vertical[1]!;
+    const widths=[Math.max(0,a.x), Math.max(0,b.x-(a.x+a.width)), Math.max(0,row.width-(b.x+b.width))];
+    const panes = rtl ? [guests(2),showcase,host] : [host,showcase,guests(2)];
+    content=<View style={s.row}>
+      <View style={{width:widths[0]}}>{panes[0]}</View><View style={{width:a.width}} />
+      <View style={{width:widths[1]}}>{panes[1]}</View><View style={{width:b.width}} />
+      <View style={{width:widths[2]}}>{panes[2]}</View>
+    </View>;
+  } else if (vertical.length && row) {
+    const f=vertical[0]!, left=Math.max(0,f.x), right=Math.max(0,row.width-f.x-f.width);
+    const consolePane=<View style={s.column}><View style={s.flex}>{host}</View><View style={s.flex}>{showcase}</View></View>;
+    const guestPane=<View style={s.flex}>{guests(2)}</View>;
+    content=<View style={s.row}>
+      <View style={{width:left}}>{rtl?guestPane:consolePane}</View><View style={{width:f.width}} />
+      <View style={{width:right}}>{rtl?consolePane:guestPane}</View>
+    </View>;
+  } else if (horizontal.length && row) {
+    const f=horizontal[0]!, top=Math.max(0,f.y), bottom=Math.max(0,row.height-f.y-f.height);
+    content=<View style={s.column}>
+      <View style={[s.row,{height:top}]}><View style={s.flex}>{host}</View><View style={s.flex}>{showcase}</View></View>
+      <View style={{height:f.height}} /><View style={{height:bottom}}>{guests(4)}</View>
+    </View>;
+  } else if (h >= w) {
+    content=<View style={s.column}>
+      <View style={[s.flex,s.row]}><View style={{flex:.6}}>{host}</View><View style={{flex:.4}}>{showcase}</View></View>
+      <View style={s.flex}>{guests(4)}</View>
+    </View>;
+  } else {
+    content=<View style={s.row}>
+      <View style={s.column}><View style={s.flex}>{host}</View><View style={s.flex}>{showcase}</View></View>
+      <View style={s.flex}>{guests(2)}</View>
+    </View>;
   }
-
-  return (
-    // Landscape == the Surface Duo spanned across both screens: host+showcase on
-    // the left panel, guests on the right. The center gutter must clear the
-    // physical hinge or the right pane bleeds a few px onto the left screen.
-    // ponytail: hardcoded hinge gutter — Expo exposes no fold API; swap for the
-    // WindowManager fold bounds if this needs to be exact per device posture.
-    <View style={[styles.fill, styles.landscapeRow]}>
-      <View style={styles.half}>
-        <View style={{ flex: hostRatio }}>{host}</View>
-        <View style={{ flex: showcaseRatio }}>{showcase}</View>
-      </View>
-      <View style={styles.half}>{guests(2)}</View>
-    </View>
-  );
+  return <View ref={rowRef} onLayout={measure} style={s.fill}>{content}</View>;
 };
-
-const styles = StyleSheet.create({
-  // gap keeps the host+showcase pairing from bleeding into the guest band
-  // (portrait: vertical split; landscape: horizontal split).
-  // The split between the two panes lands on the Duo hinge; the gutter must be
-  // wide enough to clear it so neither pane bleeds onto the other screen.
-  // Portrait (book posture, hinge horizontal): vertical gutter here.
-  // ponytail: hardcoded hinge gutter — Expo exposes no fold API.
-  fill: { flex: 1, gap: HINGE },
-  row: { flexDirection: 'row' },
-  // Landscape (hinge vertical): horizontal gutter between left/right panes.
-  landscapeRow: { flexDirection: 'row', gap: HINGE },
-  // Inner host/showcase pairing sits within one screen — no hinge, small gap.
-  half: { flex: 1, gap: 12 },
-});
+const s=StyleSheet.create({fill:{flex:1},flex:{flex:1},row:{flex:1,flexDirection:'row',gap:12},column:{flex:1,gap:12}});

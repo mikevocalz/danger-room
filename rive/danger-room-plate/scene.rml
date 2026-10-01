@@ -1,0 +1,29 @@
+<Rive version="1" kind="fragment">
+<Artboard name="DangerRoomPlate" id="0:2" width="800" height="500" clip="true" styleId="0:5" viewModelId="0:40" viewModelInstanceId="0:41">
+<LayoutComponentStyle id="0:5"/>
+<Node name="Silver" opacity="1"><DataBindContext sourcePathIds="0:40-0:101" propertyKey="18"/>
+<Shape x="400" y="45"><Rectangle width="760" height="74" cornerRadiusTL="16"/><Fill><SolidColor colorValue="FFD7D9DD"/></Fill></Shape>
+<Shape x="18" y="260"><Rectangle width="36" height="430"/><Fill><SolidColor colorValue="FFC5CAD0"/></Fill></Shape>
+<Shape x="782" y="260"><Rectangle width="36" height="430"/><Fill><SolidColor colorValue="FFB8BEC6"/></Fill></Shape>
+<Shape x="400" y="482"><Rectangle width="760" height="36" cornerRadiusTL="10"/><Fill><SolidColor colorValue="FFAEB5BE"/></Fill></Shape></Node>
+<Node name="Gold" opacity="0"><DataBindContext sourcePathIds="0:40-0:100" propertyKey="18"/>
+<Shape x="400" y="45"><Rectangle width="760" height="74" cornerRadiusTL="16"/><Fill><SolidColor colorValue="FFF0CD55"/></Fill></Shape>
+<Shape x="18" y="260"><Rectangle width="36" height="430"/><Fill><SolidColor colorValue="FFE2B93A"/></Fill></Shape>
+<Shape x="782" y="260"><Rectangle width="36" height="430"/><Fill><SolidColor colorValue="FFD5A927"/></Fill></Shape>
+<Shape x="400" y="482"><Rectangle width="760" height="36" cornerRadiusTL="10"/><Fill><SolidColor colorValue="FFC9981C"/></Fill></Shape></Node>
+<Node name="Empty well" opacity="1"><DataBindContext sourcePathIds="0:40-0:102" propertyKey="18"/>
+<Shape x="400" y="255"><Rectangle width="728" height="326" cornerRadiusTL="18"/><Fill><SolidColor colorValue="FF101B31"/></Fill></Shape>
+<Shape x="400" y="255"><Rectangle width="650" height="248" cornerRadiusTL="16"/><Stroke thickness="2"><SolidColor colorValue="557B90B3"/></Stroke></Shape></Node>
+<Shape x="400" y="255"><Rectangle width="728" height="326" cornerRadiusTL="18"/><Stroke thickness="3"><SolidColor colorValue="FF415C86"/></Stroke></Shape>
+<Shape x="400" y="255" opacity="0"><DataBindContext sourcePathIds="0:40-0:104" propertyKey="18"/><Rectangle width="742" height="340" cornerRadiusTL="20"/><Stroke thickness="5"><SolidColor colorValue="FF5DCBFF"/></Stroke></Shape>
+<Shape x="400" y="255" opacity="0"><DataBindContext sourcePathIds="0:40-0:103" propertyKey="18"/><Rectangle width="748" height="346" cornerRadiusTL="22"/><Stroke thickness="9"><SolidColor colorValue="FFF8E27D"/></Stroke></Shape>
+<Shape x="733" y="46" opacity="0"><DataBindContext sourcePathIds="0:40-0:105" propertyKey="18"/><Ellipse width="16" height="16"/><Fill><SolidColor colorValue="FFE6482E"/></Fill></Shape>
+<Node opacity="0"><DataBindContext sourcePathIds="0:40-0:106" propertyKey="18"/><Shape x="687" y="46"><Rectangle width="74" height="28" cornerRadiusTL="8"/><Fill><SolidColor colorValue="FFE6482E"/></Fill></Shape></Node>
+<Text name="Name" x="42" y="22" width="470" sizingValue="fixed" alignValue="left" wrapValue="noWrap"><TextStylePaint id="0:201" fontSize="24" letterSpacing="2.1" fontAssetId="0:30" familyName="Megalopolis X"><Fill><SolidColor colorValue="FF16294D"/></Fill></TextStylePaint><TextValueRun styleId="0:201" text="PROFESSOR X"><DataBindContext sourcePathIds="0:40-0:110" propertyKey="268"/></TextValueRun></Text>
+<Text name="Status" x="512" y="25" width="240" sizingValue="fixed" alignValue="right" wrapValue="noWrap"><TextStylePaint id="0:202" fontSize="14" letterSpacing="1.4" fontAssetId="0:30" familyName="Megalopolis X"><Fill><SolidColor colorValue="FF304A73"/></Fill></TextStylePaint><TextValueRun styleId="0:202" text="HOST · LIVE"><DataBindContext sourcePathIds="0:40-0:111" propertyKey="268"/></TextValueRun></Text>
+</Artboard>
+<FontAsset id="0:30" file="MegalopolisX.ttf" name="Megalopolis X"/>
+<ViewModel name="DangerRoomPlate" id="0:40" defaultInstanceId="0:41">
+<ViewModelPropertyNumber name="goldAlpha" id="0:100"/><ViewModelPropertyNumber name="silverAlpha" id="0:101"/><ViewModelPropertyNumber name="emptyAlpha" id="0:102"/><ViewModelPropertyNumber name="speakingAlpha" id="0:103"/><ViewModelPropertyNumber name="selfAlpha" id="0:104"/><ViewModelPropertyNumber name="liveAlpha" id="0:105"/><ViewModelPropertyNumber name="mutedAlpha" id="0:106"/><ViewModelPropertyString name="name" id="0:110"/><ViewModelPropertyString name="status" id="0:111"/>
+<ViewModelInstance id="0:41" name="Default" exports="true"><ViewModelInstanceNumber viewModelPropertyId="0:100" propertyValue="0"/><ViewModelInstanceNumber viewModelPropertyId="0:101" propertyValue="1"/><ViewModelInstanceNumber viewModelPropertyId="0:102" propertyValue="1"/><ViewModelInstanceNumber viewModelPropertyId="0:103" propertyValue="0"/><ViewModelInstanceNumber viewModelPropertyId="0:104" propertyValue="0"/><ViewModelInstanceNumber viewModelPropertyId="0:105" propertyValue="0"/><ViewModelInstanceNumber viewModelPropertyId="0:106" propertyValue="0"/><ViewModelInstanceString viewModelPropertyId="0:110" propertyValue="PROFESSOR X"/><ViewModelInstanceString viewModelPropertyId="0:111" propertyValue="HOST · STANDBY"/></ViewModelInstance>
+</ViewModel></Rive>
