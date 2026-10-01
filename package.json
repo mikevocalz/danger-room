@@ -54,7 +54,6 @@
   "devDependencies": {
     "@types/react": "19.3.0",
     "@types/three": "0.186.0",
-    "@webgpu/types": "0.1.74",
     "expo-mcp": "0.2.4",
     "patch-package": "8.0.1",
     "typescript": "7.0.2",
