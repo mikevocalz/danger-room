@@ -16,6 +16,11 @@ jobs:
           curl -fsSL https://releases.rive.app/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.rive/bin" >> "$GITHUB_PATH"
+      - name: Install Rive Linux runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgles2 libx11-6
+
       - name: Build authored plate
         run: |
           RIVE_BIN="$(command -v rive || find "$HOME" -type f -name rive -perm -111 -print -quit)"
