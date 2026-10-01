@@ -6,6 +6,7 @@
 - React: `19.3.0`.
 - React Native: `0.88.0-rc.3`.
 - Expo Router: `~58.0.10`.
+- Horizon build plugin: `expo-horizon-core@57.0.2` (latest published package; its public compatibility table has not yet added an SDK 58 row, so Quest native validation is required on this migration).
 - React Native Screens: `~4.28.0`.
 - Viro fork: `mikevocalz/viro@b4cd6aaf62ecc5f004f53da6ef271654cd19d044`.
 - Nitro canvas fork: `mikevocalz/nitro-canvas-in-Vision@`033d93e9f402b6b7eae2b6e28c2468f15cf37114`.
@@ -54,16 +55,18 @@ npm install
 npm run doctor
 npm run typecheck
 npx expo prebuild --clean
+npm run android
+npm run quest
 ```
 
 SDK 58 enables Android R8 release minification by default. This migration explicitly keeps `enableMinifyInReleaseBuilds: false` until the custom Viro/Nitro keep-rule pass is validated.
 
 ## Device acceptance
 
-1. Phone portrait/landscape lobby and room.
+1. `npm run android` resolves `mobileDebug` and phone portrait/landscape lobby + room work.
 2. Android foldable flat, book, and tabletop postures.
 3. Surface Duo / dual-screen separation with no pane crossing the hinge.
 4. Trifold/multi-hinge geometry if hardware/emulator support is available.
-5. Quest passthrough toggle, host video texture, scene exit, and Rive plate/HUD rendering.
+5. `npm run quest` resolves `questDebug`; Quest passthrough toggle, host video texture, scene exit, and Rive plate/HUD rendering work.
 6. Rive bindings update live when passthrough/theme state changes.
 7. Release Android build with the current R8 opt-out, then a separate keep-rule pass before re-enabling R8.
