@@ -17,6 +17,7 @@ import {
 } from '@reactvision/react-viro';
 
 import { updateListener, restartTheme, getThemeState, onThemeState } from './xrThemeAudio';
+import { SpatialRivePlate } from './SpatialRivePlate';
 
 /**
  * Spatial conference scene — cloned from Viro's shipped `vr-quest-scene.tsx`
@@ -194,28 +195,6 @@ const Label = ({
   />
 );
 
-/** A roster-console plate: cream frame, cobalt screen, gold header, name centred. */
-const Plate = ({
-  w, h, name, headerH, fontSize,
-}: {
-  w: number; h: number; name: string; headerH: number; fontSize: number;
-}) => {
-  const inset = 0.02;
-  const screenH = h - headerH - inset;
-  const headerY = h / 2 - headerH / 2 - inset;
-  const screenY = -(headerH + inset) / 2 - inset / 2; // centre of the cobalt screen
-  return (
-    <ViroNode>
-      <ViroQuad width={w} height={h} materials={['frame']} />
-      <ViroQuad width={w - inset * 2} height={headerH} position={[0, headerY, 0.006]} materials={['header']} />
-      <ViroQuad width={w - inset * 2} height={screenH} position={[0, screenY, 0.004]} materials={['screen']} />
-      {/* Name in the gold header band (dark on gold), nudged DOWN so it sits
-          visually centred — Viro text baselines render a touch high. */}
-      <Label text={name.toUpperCase()} pw={w - 0.1} ph={headerH} fontSize={fontSize} color="#16294d" y={headerY - headerH * 0.22} />
-    </ViroNode>
-  );
-};
-
 /** Hover-aware UI button (per-source hover so both pointers behave). */
 const Btn = ({
   label, y, onClick, on = false, fontSize,
@@ -290,7 +269,15 @@ export const ConferenceScene = (props: {
 
       {/* Host stage — LEFT, large — grab anywhere to drag (FixedToWorld). */}
       <ViroNode position={[-1.05, -0.05, -1.5]} rotation={[0, 26, 0]} dragType="FixedToWorld" onDrag={() => {}}>
-        <Plate w={1.5} h={0.85} name="HOST" headerH={0.16} fontSize={40} />
+        <SpatialRivePlate
+          width={1.5}
+          height={0.85}
+          name="HOST"
+          status={hostStreamTag ? 'HOST · LIVE' : 'HOST · STANDBY'}
+          finish="silver"
+          empty={!hostStreamTag}
+          live={!!hostStreamTag}
+        />
         {/* Live host feed over the cobalt screen. ALWAYS mounted, `visible`
             toggled (the scene's one-stable-mount rule — same as the skybox);
             16:9 inside the plate screen area, nudged forward past the plate. */}
@@ -318,7 +305,14 @@ export const ConferenceScene = (props: {
       <ViroNode position={[1.05, -0.05, -1.5]} rotation={[0, -26, 0]} dragType="FixedToWorld" onDrag={() => {}}>
         {GUEST_CENTERS.map(([x, y], i) => (
           <ViroNode key={i} position={[x, y, 0]}>
-            <Plate w={0.66} h={0.37} name={GUEST_NAMES[i]} headerH={0.085} fontSize={20} />
+            <SpatialRivePlate
+              width={0.66}
+              height={0.37}
+              name={GUEST_NAMES[i]}
+              status="GUEST · READY"
+              finish="gold"
+              empty
+            />
           </ViroNode>
         ))}
       </ViroNode>
